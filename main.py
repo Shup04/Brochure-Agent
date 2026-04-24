@@ -4,9 +4,12 @@ import argparse
 import base64
 import io
 import os
+import re
 import sys
 import threading
 import traceback
+from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -38,17 +41,19 @@ class RoomSection(BaseModel):
 
 class ListingExtraction(BaseModel):
     address: str
+    short_address: str
     price: str
     bedrooms: int | None = None
     bathrooms: int | None = None
     total_sqft: str | None = None
-    summary: str = ""
+    summary_bullets: list[str] = Field(default_factory=list)
     feature_rows: list[FeatureRow] = Field(default_factory=list)
     room_sections: list[RoomSection] = Field(default_factory=list)
 
 
 class ImageInsight(BaseModel):
     file_name: str
+    scene_type: str
     room_type: str
     caption: str
     showcase_score: int = Field(ge=1, le=10)
@@ -66,11 +71,18 @@ class TitleResponse(BaseModel):
     title: str
 
 
+class BrochureCopyResponse(BaseModel):
+    title: str
+    summary_bullets: list[str] = Field(default_factory=list)
+    captions: list[str] = Field(default_factory=list)
+
+
 @dataclass
 class SelectedImage:
     path: Path
     caption: str
     showcase_score: int
+    scene_type: str
     room_type: str
     front_exterior: bool
     exterior: bool
@@ -126,11 +138,21 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
         "You extract real-estate brochure data from messy listing text. "
         "Return only brochure-safe factual data. "
         "Do not invent facts. "
+        "Create a short_address that is just the street address unit and street, like '4-1616 Happyvale Ave'. "
+        "Do not include city, province, or postal code in short_address. "
+        "Create 4-6 summary_bullets that each read like a strong brochure bullet point, not a sentence fragment. "
+        "Each bullet should be roughly 10-18 words. "
         "Normalize labels and keep room order as presented. "
         "For feature_rows, output rows in this preferred order when available: "
         "Location, Style, Heating, Fireplace, Parking, Includes, Age, Taxes, Lot Size. "
-        "Each row should contain a label and one or more display lines in values. "
-        "For room_sections, preserve the section headings and room ordering. "
+        "Each row should contain one label and concise brochure-friendly values. "
+        "Examples: Location='Brocklehurst'; Style='Cathedral Entry'; Heating='Forced Air' and 'Central Air'; "
+        "Parking='2 Car Garage' and 'Additional Parking'; Includes='Dishwasher', 'Fridge', 'Washer/Dryer'; "
+        "Age='42 Years'; Taxes='$3,145 (2025)'; Lot Size='.23 Acres'. "
+        "Do not include MLS numbers, strata fee details, major area labels, or long administrative text in feature_rows. "
+        "For room_sections, preserve meaningful sections like Main/Basement/Upper where possible. "
+        "Each section title should be short and brochure-ready, and area_text should be a concise value like '1,081 sq. ft.' "
+        "without repeating the word Total. "
         "If an item is unavailable, omit it or leave it null."
     )
 
@@ -195,7 +217,9 @@ def analyze_image_batch(client: OpenAI, model: str, image_paths: Sequence[Path])
                 "and write a short brochure caption that highlights the best feature of the photo. "
                 "Prefer bright, wide, well-composed photos that help sell the house. "
                 "Avoid blurry images, duplicate angles, closeups with little context, floorplans, logos, "
-                "screenshots, and utility-only shots unless there are very few choices."
+                "screenshots, and utility-only shots unless there are very few choices. "
+                "Set scene_type to one of: front_exterior, backyard, deck_patio, living_room, dining_room, kitchen, "
+                "primary_bedroom, bedroom, bathroom, rec_room, laundry, garage, view, other_exterior, other."
             ),
         }
     ]
@@ -245,6 +269,7 @@ def analyze_images(
                 path=image_path,
                 caption=clean_caption(insight.caption),
                 showcase_score=insight.showcase_score,
+                scene_type=normalize_scene_type(insight.scene_type),
                 room_type=insight.room_type.strip() or "Photo",
                 front_exterior=insight.front_exterior,
                 exterior=insight.exterior,
@@ -266,7 +291,34 @@ def analyze_images(
 
 def clean_caption(text: str) -> str:
     value = " ".join(text.split())
-    return value[:140].rstrip(". ") + "." if value else "Beautiful view of the home."
+    if not value:
+        return "Beautiful space with strong natural light and inviting everyday comfort."
+    if len(value) > 92:
+        value = value[:92].rsplit(" ", 1)[0]
+    value = value.rstrip(". ")
+    return f"{value}."
+
+
+def normalize_scene_type(scene_type: str) -> str:
+    value = scene_type.strip().lower().replace(" ", "_")
+    allowed = {
+        "front_exterior",
+        "backyard",
+        "deck_patio",
+        "living_room",
+        "dining_room",
+        "kitchen",
+        "primary_bedroom",
+        "bedroom",
+        "bathroom",
+        "rec_room",
+        "laundry",
+        "garage",
+        "view",
+        "other_exterior",
+        "other",
+    }
+    return value if value in allowed else "other"
 
 
 def choose_images(ranked_images: Sequence[SelectedImage]) -> tuple[SelectedImage, list[SelectedImage]]:
@@ -276,29 +328,61 @@ def choose_images(ranked_images: Sequence[SelectedImage]) -> tuple[SelectedImage
     if main_image is None:
         main_image = ranked_images[0]
 
-    gallery = [img for img in ranked_images if img.path != main_image.path]
-    if len(gallery) < 10:
-        gallery = list(gallery)
-        if main_image not in gallery:
-            gallery.insert(0, main_image)
-    return main_image, gallery[:10]
+    candidates = [img for img in ranked_images if img.path != main_image.path]
+    selected: list[SelectedImage] = []
+    scene_counts: Counter[str] = Counter()
+    exterior_count = 0
+
+    def exterior_like(image: SelectedImage) -> bool:
+        return image.scene_type in {"front_exterior", "backyard", "deck_patio", "view", "other_exterior"}
+
+    for image in candidates:
+        if len(selected) >= 10:
+            break
+        if scene_counts[image.scene_type] >= 1 and len(selected) < 8:
+            continue
+        if image.scene_type in {"bedroom", "primary_bedroom"} and scene_counts["bedroom"] + scene_counts["primary_bedroom"] >= 2:
+            continue
+        if exterior_like(image) and exterior_count >= 3 and len(selected) < 9:
+            continue
+        selected.append(image)
+        scene_counts[image.scene_type] += 1
+        if exterior_like(image):
+            exterior_count += 1
+
+    for image in candidates:
+        if len(selected) >= 10:
+            break
+        if image.path in {item.path for item in selected}:
+            continue
+        selected.append(image)
+
+    return main_image, selected[:10]
 
 
-def generate_title(
+def generate_brochure_copy(
     client: OpenAI,
     model: str,
     listing: ListingExtraction,
     main_image: SelectedImage,
     gallery_images: Sequence[SelectedImage],
-) -> str:
-    gallery_summary = "\n".join(f"- {image.room_type}: {image.caption}" for image in gallery_images[:5])
+) -> BrochureCopyResponse:
+    gallery_summary = "\n".join(
+        f"- {image.path.name} | scene={image.scene_type} | room={image.room_type} | draft={image.caption}"
+        for image in gallery_images
+    )
     response = client.responses.parse(
         model=model,
         instructions=(
-            "Write one concise real-estate brochure headline in title case. "
-            "Keep it specific, polished, and not cheesy. "
-            "Do not include the price. "
-            "Aim for 8-16 words."
+            "Write brochure copy for a real-estate flyer. "
+            "Return one title, 4-6 summary bullets, and one caption for each gallery image in the same order given. "
+            "The title must read like a polished headline, not a list of features. "
+            "It should evoke the home and lifestyle, be specific, and stay in title case. "
+            "Avoid comma-spliced feature lists. "
+            "Each summary bullet should be a complete, brochure-ready point of roughly 8-16 words. "
+            "Each caption should be balanced and concise, ideally 45-85 characters, and should fit a small caption box. "
+            "Do not repeat nearly identical captions. "
+            "Do not mention file names."
         ),
         input=[
             {
@@ -307,39 +391,58 @@ def generate_title(
                     {
                         "type": "input_text",
                         "text": (
-                            f"Address: {listing.address}\n"
-                            f"Summary: {listing.summary}\n"
-                            f"Main image: {main_image.caption}\n"
+                            f"Short address: {listing.short_address}\n"
+                            f"Full address: {listing.address}\n"
+                            f"Price: {listing.price}\n"
+                            f"Beds/Baths: {listing.bedrooms} / {listing.bathrooms}\n"
+                            f"Features: {format_feature_rows_for_prompt(listing.feature_rows)}\n"
+                            f"Listing bullets: {' | '.join(listing.summary_bullets)}\n"
+                            f"Main image: scene={main_image.scene_type} draft={main_image.caption}\n"
                             f"Other images:\n{gallery_summary}"
                         ),
                     }
                 ],
             }
         ],
-        text_format=TitleResponse,
+        text_format=BrochureCopyResponse,
         text={"verbosity": "low"},
         reasoning={"effort": "low"},
-        max_output_tokens=100,
+        max_output_tokens=600,
     )
     parsed = response.output_parsed
     if not parsed or not parsed.title:
-        raise RuntimeError("The model returned no title.")
-    return " ".join(parsed.title.split())
+        raise RuntimeError("The model returned no brochure copy.")
+    parsed.title = " ".join(parsed.title.split())
+    parsed.summary_bullets = [clean_bullet_text(item) for item in parsed.summary_bullets if item.strip()]
+    parsed.captions = [clean_caption(item) for item in parsed.captions]
+    return parsed
+
+
+def format_feature_rows_for_prompt(feature_rows: Sequence[FeatureRow]) -> str:
+    parts: list[str] = []
+    for row in feature_rows:
+        values = ", ".join(value.strip() for value in row.values if value.strip())
+        if values:
+            parts.append(f"{row.label}: {values}")
+    return " | ".join(parts)
+
+
+def clean_bullet_text(text: str) -> str:
+    return " ".join(text.split()).lstrip("-• ").strip()
 
 
 def build_text_mapping(
-    listing: ListingExtraction, title: str, gallery_images: Sequence[SelectedImage]
+    listing: ListingExtraction, brochure_copy: BrochureCopyResponse
 ) -> dict[str, str]:
     mapping = {
-        "{{ADDRESS}}": listing.address,
+        "{{ADDRESS}}": listing.short_address,
         "{{PRICE}}": listing.price,
         "{{BEDS_AND_BATHS}}": format_beds_and_baths(listing.bedrooms, listing.bathrooms),
-        "{{TITLE}}": title,
-        "{{SUMMARY}}": listing.summary,
+        "{{TITLE}}": brochure_copy.title,
         "{{TOTAL}}": format_total(listing.total_sqft),
     }
     for index in range(1, 11):
-        caption = gallery_images[index - 1].caption if index <= len(gallery_images) else ""
+        caption = brochure_copy.captions[index - 1] if index <= len(brochure_copy.captions) else ""
         mapping[f"{{{{caption_{index}}}}}"] = caption
     return mapping
 
@@ -353,7 +456,18 @@ def format_beds_and_baths(bedrooms: int | None, bathrooms: int | None) -> str:
 def format_total(total_sqft: str | None) -> str:
     if not total_sqft:
         return "Total"
-    return f"Total ({total_sqft} sq. ft.)"
+    normalized = normalize_sqft_text(total_sqft)
+    return f"Total ({normalized})"
+
+
+def normalize_sqft_text(value: str) -> str:
+    compact = " ".join(value.split())
+    if "sq" in compact.lower():
+        return compact
+    match = re.search(r"[\d,.]+", compact)
+    if not match:
+        return compact
+    return f"{match.group(0)} sq. ft."
 
 
 def clone_run_style(source_run, dest_run) -> None:
@@ -367,6 +481,47 @@ def clone_run_style(source_run, dest_run) -> None:
     dest_font.size = font.size
     if font.color is not None and getattr(font.color, "rgb", None) is not None:
         dest_font.color.rgb = font.color.rgb
+
+
+def apply_paragraph_style(source, dest) -> None:
+    dest.alignment = source.alignment
+    dest.level = source.level
+    dest.line_spacing = source.line_spacing
+    dest.space_before = source.space_before
+    dest.space_after = source.space_after
+    source_ppr = getattr(source._p, "pPr", None)
+    if source_ppr is not None:
+        dest_ppr = getattr(dest._p, "pPr", None)
+        if dest_ppr is not None:
+            dest._p.remove(dest_ppr)
+        dest._p.insert(0, deepcopy(source_ppr))
+
+
+def apply_run_style_from_snapshot(run, snapshot: dict) -> None:
+    font = run.font
+    font.bold = snapshot.get("bold")
+    font.italic = snapshot.get("italic")
+    font.name = snapshot.get("name")
+    font.size = snapshot.get("size")
+    color = snapshot.get("color")
+    if color is not None:
+        font.color.rgb = color
+
+
+def capture_first_run_style(paragraph) -> dict:
+    run = paragraph.runs[0] if paragraph.runs else None
+    if run is None:
+        return {}
+    color = None
+    if run.font.color is not None and getattr(run.font.color, "rgb", None) is not None:
+        color = run.font.color.rgb
+    return {
+        "bold": run.font.bold,
+        "italic": run.font.italic,
+        "name": run.font.name,
+        "size": run.font.size,
+        "color": color,
+    }
 
 
 def replace_text_in_shape(shape, replacements: dict[str, str]) -> None:
@@ -393,10 +548,31 @@ def replace_text_in_shape(shape, replacements: dict[str, str]) -> None:
             clone_run_style(source_run, paragraph.runs[0])
 
 
+def populate_summary_block(shape, bullets: Sequence[str]) -> None:
+    if not getattr(shape, "has_text_frame", False):
+        return
+    text_frame = shape.text_frame
+    template_paragraph = text_frame.paragraphs[0]
+    paragraph_style = template_paragraph
+    run_style = capture_first_run_style(template_paragraph)
+    text_frame.clear()
+
+    values = list(bullets)[:6] or [""]
+    for index, bullet in enumerate(values):
+        paragraph = text_frame.paragraphs[0] if index == 0 else text_frame.add_paragraph()
+        apply_paragraph_style(paragraph_style, paragraph)
+        paragraph.text = bullet
+        if paragraph.runs:
+            apply_run_style_from_snapshot(paragraph.runs[0], run_style)
+
+
 def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
     if not getattr(shape, "has_text_frame", False):
         return
     text_frame = shape.text_frame
+    template_paragraph = text_frame.paragraphs[0]
+    paragraph_style = template_paragraph
+    run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
 
     first = True
@@ -407,24 +583,17 @@ def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
 
         paragraph = text_frame.paragraphs[0] if first else text_frame.add_paragraph()
         first = False
+        apply_paragraph_style(paragraph_style, paragraph)
         paragraph.text = f"{row.label}:\t{values[0]}"
-        paragraph.space_after = 0
-        paragraph.space_before = 0
-        paragraph.line_spacing = 1.0
         for run in paragraph.runs:
-            run.font.bold = True
-            run.font.name = "Nimbus Roman"
-            run.font.size = paragraph.runs[0].font.size
+            apply_run_style_from_snapshot(run, run_style)
 
         for extra_value in values[1:]:
             extra = text_frame.add_paragraph()
+            apply_paragraph_style(paragraph_style, extra)
             extra.text = f"\t{extra_value}"
-            extra.space_after = 0
-            extra.space_before = 0
-            extra.line_spacing = 1.0
             for run in extra.runs:
-                run.font.bold = True
-                run.font.name = "Nimbus Roman"
+                apply_run_style_from_snapshot(run, run_style)
 
 
 def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
@@ -433,35 +602,35 @@ def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
     from pptx.enum.text import PP_ALIGN
 
     text_frame = shape.text_frame
+    template_paragraph = text_frame.paragraphs[0]
+    paragraph_style = template_paragraph
+    run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
     first = True
 
     for section in room_sections:
         heading = text_frame.paragraphs[0] if first else text_frame.add_paragraph()
         first = False
+        apply_paragraph_style(paragraph_style, heading)
         heading.alignment = PP_ALIGN.CENTER
-        heading.text = f"{section.title} ({section.area_text})"
-        heading.space_after = 0
-        heading.space_before = 0
+        heading.text = f"{section.title} ({normalize_sqft_text(section.area_text)})"
         for run in heading.runs:
-            run.font.bold = True
+            apply_run_style_from_snapshot(run, run_style)
             run.font.italic = True
-            run.font.name = "Nimbus Roman"
 
         spacer = text_frame.add_paragraph()
         spacer.text = ""
 
         for room in section.rooms:
             row = text_frame.add_paragraph()
+            apply_paragraph_style(paragraph_style, row)
+            row.alignment = None
             row.text = f"{room.name}\t{room.size}"
-            row.space_after = 0
-            row.space_before = 0
             for run in row.runs:
-                run.font.bold = True
-                run.font.name = "Nimbus Roman"
+                apply_run_style_from_snapshot(run, run_style)
 
-        spacer = text_frame.add_paragraph()
-        spacer.text = ""
+    text_frame.add_paragraph().text = "*All measurements approximate*"
+    text_frame.add_paragraph().text = "Size taken from Land Title Buyer to verify"
 
 
 def remove_shape(shape) -> None:
@@ -524,6 +693,9 @@ def render_presentation(
 
             if getattr(shape, "has_text_frame", False):
                 combined_text = "\n".join("".join(run.text for run in paragraph.runs) for paragraph in shape.text_frame.paragraphs)
+                if "{{SUMMARY}}" in combined_text:
+                    populate_summary_block(shape, text_mapping.get("{{SUMMARY}}", "").split("\n"))
+                    continue
                 if "{{FEATURE_BLOCK}}" in combined_text:
                     populate_feature_block(shape, feature_rows)
                     continue
@@ -551,10 +723,13 @@ def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -
     ranked_images = analyze_images(client, config.model, image_paths, logger)
     main_image, gallery_images = choose_images(ranked_images)
 
-    logger("Generating brochure title...")
-    title = generate_title(client, config.model, listing, main_image, gallery_images)
+    logger("Generating brochure copy...")
+    brochure_copy = generate_brochure_copy(client, config.model, listing, main_image, gallery_images)
+    for image, caption in zip(gallery_images, brochure_copy.captions):
+        image.caption = caption
 
-    text_mapping = build_text_mapping(listing, title, gallery_images)
+    text_mapping = build_text_mapping(listing, brochure_copy)
+    text_mapping["{{SUMMARY}}"] = "\n".join(brochure_copy.summary_bullets or listing.summary_bullets)
 
     logger("Rendering PowerPoint brochure...")
     render_presentation(
