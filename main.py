@@ -74,7 +74,12 @@ class TitleResponse(BaseModel):
 class BrochureCopyResponse(BaseModel):
     title: str
     summary_bullets: list[str] = Field(default_factory=list)
-    captions: list[str] = Field(default_factory=list)
+    captions: list["CaptionItem"] = Field(default_factory=list)
+
+
+class CaptionItem(BaseModel):
+    file_name: str
+    caption: str
 
 
 @dataclass
@@ -141,18 +146,20 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
         "Create a short_address that is just the street address unit and street, like '4-1616 Happyvale Ave'. "
         "Do not include city, province, or postal code in short_address. "
         "Create 4-6 summary_bullets that each read like a strong brochure bullet point, not a sentence fragment. "
-        "Each bullet should be roughly 10-18 words. "
+        "Each bullet should be roughly 14-24 words. "
         "Normalize labels and keep room order as presented. "
         "For feature_rows, output rows in this preferred order when available: "
         "Location, Style, Heating, Fireplace, Parking, Includes, Age, Taxes, Lot Size. "
         "Each row should contain one label and concise brochure-friendly values. "
         "Examples: Location='Brocklehurst'; Style='Cathedral Entry'; Heating='Forced Air' and 'Central Air'; "
-        "Parking='2 Car Garage' and 'Additional Parking'; Includes='Dishwasher', 'Fridge', 'Washer/Dryer'; "
+        "Parking='2 Car Garage' and 'Additional Parking'; Includes='Dishwasher', 'Electric Range', 'Refrigerator', 'Washer/Dryer'; "
         "Age='42 Years'; Taxes='$3,145 (2025)'; Lot Size='.23 Acres'. "
         "Do not include MLS numbers, strata fee details, major area labels, or long administrative text in feature_rows. "
-        "For room_sections, preserve meaningful sections like Main/Basement/Upper where possible. "
+        "For room_sections, preserve meaningful sections like Main/Lower/Basement/Upper where possible. "
         "Each section title should be short and brochure-ready, and area_text should be a concise value like '1,081 sq. ft.' "
         "without repeating the word Total. "
+        "Use area hints from nearby values such as Above Grade, Below Grade, 1st, Lower, or Bsmt when present. "
+        "Bathrooms may use values like '4 piece' or '2 piece'. "
         "If an item is unavailable, omit it or leave it null."
     )
 
@@ -375,14 +382,15 @@ def generate_brochure_copy(
         model=model,
         instructions=(
             "Write brochure copy for a real-estate flyer. "
-            "Return one title, 4-6 summary bullets, and one caption for each gallery image in the same order given. "
+            "Return one title, 4-6 summary bullets, and one caption object for each gallery image. "
             "The title must read like a polished headline, not a list of features. "
             "It should evoke the home and lifestyle, be specific, and stay in title case. "
             "Avoid comma-spliced feature lists. "
-            "Each summary bullet should be a complete, brochure-ready point of roughly 8-16 words. "
-            "Each caption should be balanced and concise, ideally 45-85 characters, and should fit a small caption box. "
+            "Each summary bullet should be a complete, brochure-ready point of roughly 14-24 words. "
+            "Each caption object must include the exact file_name provided for that image. "
+            "Each caption should be balanced and concise, ideally 70-110 characters, and should fit a small caption box. "
             "Do not repeat nearly identical captions. "
-            "Do not mention file names."
+            "Do not mention file names in the caption text."
         ),
         input=[
             {
@@ -398,7 +406,7 @@ def generate_brochure_copy(
                             f"Features: {format_feature_rows_for_prompt(listing.feature_rows)}\n"
                             f"Listing bullets: {' | '.join(listing.summary_bullets)}\n"
                             f"Main image: scene={main_image.scene_type} draft={main_image.caption}\n"
-                            f"Other images:\n{gallery_summary}"
+                            f"Other images in required caption order:\n{gallery_summary}"
                         ),
                     }
                 ],
@@ -414,7 +422,11 @@ def generate_brochure_copy(
         raise RuntimeError("The model returned no brochure copy.")
     parsed.title = " ".join(parsed.title.split())
     parsed.summary_bullets = [clean_bullet_text(item) for item in parsed.summary_bullets if item.strip()]
-    parsed.captions = [clean_caption(item) for item in parsed.captions]
+    parsed.captions = [
+        CaptionItem(file_name=item.file_name, caption=clean_caption(item.caption))
+        for item in parsed.captions
+        if item.file_name.strip() and item.caption.strip()
+    ]
     return parsed
 
 
@@ -432,8 +444,9 @@ def clean_bullet_text(text: str) -> str:
 
 
 def build_text_mapping(
-    listing: ListingExtraction, brochure_copy: BrochureCopyResponse
+    listing: ListingExtraction, brochure_copy: BrochureCopyResponse, gallery_images: Sequence[SelectedImage]
 ) -> dict[str, str]:
+    caption_map = {item.file_name: item.caption for item in brochure_copy.captions}
     mapping = {
         "{{ADDRESS}}": listing.short_address,
         "{{PRICE}}": listing.price,
@@ -442,7 +455,10 @@ def build_text_mapping(
         "{{TOTAL}}": format_total(listing.total_sqft),
     }
     for index in range(1, 11):
-        caption = brochure_copy.captions[index - 1] if index <= len(brochure_copy.captions) else ""
+        caption = ""
+        if index <= len(gallery_images):
+            image = gallery_images[index - 1]
+            caption = caption_map.get(image.path.name, image.caption)
         mapping[f"{{{{caption_{index}}}}}"] = caption
     return mapping
 
@@ -468,6 +484,117 @@ def normalize_sqft_text(value: str) -> str:
     if not match:
         return compact
     return f"{match.group(0)} sq. ft."
+
+
+def extract_area_hints(raw_text: str) -> dict[str, str]:
+    hints: dict[str, str] = {}
+    patterns = {
+        "main": [r"Above Grade\s+([\d,.]+)", r"1st\s+([\d,.]+)"],
+        "lower": [r"Below Grade\s+([\d,.]+)", r"Bsmt\s+([\d,.]+)"],
+    }
+    for key, regexes in patterns.items():
+        for pattern in regexes:
+            match = re.search(pattern, raw_text, flags=re.IGNORECASE)
+            if match:
+                hints[key] = normalize_sqft_text(match.group(1))
+                break
+    return hints
+
+
+def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> list[FeatureRow]:
+    values_by_label = {row.label.strip().lower(): [v.strip() for v in row.values if v.strip()] for row in feature_rows}
+
+    location_values = values_by_label.get("location", [])
+    location = next((value for value in location_values if "brock" in value.lower()), "")
+    if not location and re.search(r"Brocklehurst", raw_text, flags=re.IGNORECASE):
+        location = "Brocklehurst"
+
+    style = next((value for value in values_by_label.get("style", []) if len(value) < 40), "")
+
+    heating_clean: list[str] = []
+    for candidate in ["Forced Air", "Central Air", "Natural Gas"]:
+        if any(candidate.lower() in value.lower() for value in values_by_label.get("heating", [])):
+            heating_clean.append(candidate)
+
+    parking_source = " | ".join(values_by_label.get("parking", []))
+    parking_clean: list[str] = []
+    garage_match = re.search(r"Garage Spaces[: ]+(\d+(?:\.\d+)?)", parking_source, flags=re.IGNORECASE)
+    total_match = re.search(r"Parking Total[: ]+(\d+(?:\.\d+)?)", parking_source, flags=re.IGNORECASE)
+    if garage_match:
+        garage_spaces = int(float(garage_match.group(1)))
+        if garage_spaces > 0:
+            parking_clean.append(f"{garage_spaces} Car Garage")
+    if total_match and garage_match and int(float(total_match.group(1))) > int(float(garage_match.group(1))):
+        parking_clean.append("Additional Parking")
+
+    include_clean: list[str] = []
+    include_source = values_by_label.get("includes", [])
+    for appliance in ["Dishwasher", "Electric Range", "Refrigerator", "Washer/Dryer"]:
+        if any(appliance.lower() in value.lower() for value in include_source):
+            include_clean.append(appliance)
+
+    age_clean: list[str] = []
+    age_source = " | ".join(values_by_label.get("age", []))
+    built_match = re.search(r"(?:Year Built|Built)\s*(\d{4})", age_source, flags=re.IGNORECASE)
+    if built_match:
+        built_year = int(built_match.group(1))
+        listing_year_match = re.search(r"Date Listed\s+\w+\s+\d{1,2}/(\d{2})", raw_text)
+        listing_year = 2000 + int(listing_year_match.group(1)) if listing_year_match else 2025
+        age_clean.append(f"{listing_year - built_year} Years")
+
+    taxes = next((value for value in values_by_label.get("taxes", []) if "$" in value), "")
+    lot_size = next((value for value in values_by_label.get("lot size", []) if value), "")
+
+    cleaned: list[FeatureRow] = []
+    for label, values in [
+        ("Location", [location] if location else []),
+        ("Style", [style] if style else []),
+        ("Heating", heating_clean),
+        ("Parking", parking_clean),
+        ("Includes", include_clean),
+        ("Age", age_clean),
+        ("Taxes", [taxes] if taxes else []),
+        ("Lot Size", [lot_size] if lot_size else []),
+    ]:
+        if values:
+            cleaned.append(FeatureRow(label=label, values=values))
+    return cleaned
+
+
+def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> list[RoomSection]:
+    area_hints = extract_area_hints(raw_text)
+    cleaned_sections: list[RoomSection] = []
+    for section in room_sections:
+        title = section.title.strip()
+        title_lower = title.lower()
+        if title_lower in {"1st", "first", "main floor", "upper main"}:
+            title = "Main"
+        elif title_lower in {"lower floor", "basement", "bsmt"}:
+            title = "Lower"
+
+        area_text = section.area_text.strip()
+        if not area_text or "not specified" in area_text.lower():
+            if title.lower() == "main" and "main" in area_hints:
+                area_text = area_hints["main"]
+            elif title.lower() == "lower" and "lower" in area_hints:
+                area_text = area_hints["lower"]
+
+        rooms: list[RoomEntry] = []
+        for room in section.rooms:
+            name = room.name.strip()
+            size = " ".join(room.size.split()).strip()
+            if "Full 4 PCE" in name:
+                name = name.replace(" - Full 4 PCE", "")
+                size = "4 piece"
+            if "Half 2 PCE" in name:
+                name = name.replace(" - Half 2 PCE", "")
+                size = "2 piece"
+            size = size.replace("  ", " ")
+            if size == "x":
+                size = ""
+            rooms.append(RoomEntry(name=name, size=size))
+        cleaned_sections.append(RoomSection(title=title, area_text=area_text, rooms=rooms))
+    return cleaned_sections
 
 
 def clone_run_style(source_run, dest_run) -> None:
@@ -629,10 +756,6 @@ def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
             for run in row.runs:
                 apply_run_style_from_snapshot(run, run_style)
 
-    text_frame.add_paragraph().text = "*All measurements approximate*"
-    text_frame.add_paragraph().text = "Size taken from Land Title Buyer to verify"
-
-
 def remove_shape(shape) -> None:
     shape._element.getparent().remove(shape._element)
 
@@ -715,6 +838,8 @@ def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -
 
     logger("Extracting brochure fields from listing text...")
     listing = analyze_listing_text(client, config.model, raw_text)
+    listing.feature_rows = clean_feature_rows(listing.feature_rows, raw_text)
+    listing.room_sections = clean_room_sections(listing.room_sections, raw_text)
 
     logger("Scanning image folder...")
     image_paths = iter_image_paths(config.image_dir)
@@ -728,7 +853,7 @@ def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -
     for image, caption in zip(gallery_images, brochure_copy.captions):
         image.caption = caption
 
-    text_mapping = build_text_mapping(listing, brochure_copy)
+    text_mapping = build_text_mapping(listing, brochure_copy, gallery_images)
     text_mapping["{{SUMMARY}}"] = "\n".join(brochure_copy.summary_bullets or listing.summary_bullets)
 
     logger("Rendering PowerPoint brochure...")
