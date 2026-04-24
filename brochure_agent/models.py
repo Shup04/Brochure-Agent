@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-5.4"
 
 
 class FeatureRow(BaseModel):

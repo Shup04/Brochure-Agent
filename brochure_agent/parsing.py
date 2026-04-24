@@ -239,11 +239,20 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
     ]
 
     fireplace_clean: list[str] = []
-    fireplace_match = re.search(r"Fireplace\s+([^\n]+)", raw_text, flags=re.IGNORECASE)
-    if fireplace_match:
-        fireplace_value = fireplace_match.group(1).strip()
-        if fireplace_value and fireplace_value.lower() not in {"", "no", "none"}:
-            fireplace_clean.append(fireplace_value)
+    fireplace_source = " | ".join(values_by_label.get("fireplace", []))
+    fireplace_candidates = [item.strip() for item in re.split(r"[|\n,]+", fireplace_source) if item.strip()]
+    fireplace_keywords = ("fireplace", "wood", "gas", "electric", "pellet", "insert", "burning", "stove")
+    for candidate in fireplace_candidates:
+        lowered = candidate.lower()
+        if any(keyword in lowered for keyword in fireplace_keywords):
+            fireplace_clean.append(candidate)
+    if not fireplace_clean:
+        fireplace_match = re.search(r"Fireplace\s+([^\n]+)", raw_text, flags=re.IGNORECASE)
+        if fireplace_match:
+            fireplace_value = fireplace_match.group(1).strip()
+            lowered = fireplace_value.lower()
+            if fireplace_value and any(keyword in lowered for keyword in fireplace_keywords):
+                fireplace_clean.append(fireplace_value)
 
     parking_source = " | ".join(values_by_label.get("parking", []))
     parking_clean: list[str] = []
