@@ -152,10 +152,9 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
             }
         ],
         text_format=ListingExtraction,
+        text={"verbosity": "low"},
         reasoning={"effort": "low"},
-        temperature=0.2,
         max_output_tokens=4000,
-        verbosity="low",
     )
     parsed = response.output_parsed
     if not parsed:
@@ -216,10 +215,9 @@ def analyze_image_batch(client: OpenAI, model: str, image_paths: Sequence[Path])
         instructions="Return structured JSON only.",
         input=[{"role": "user", "content": content}],
         text_format=ImageBatchAnalysis,
+        text={"verbosity": "low"},
         reasoning={"effort": "low"},
-        temperature=0.2,
         max_output_tokens=2500,
-        verbosity="low",
     )
     parsed = response.output_parsed
     if not parsed:
@@ -319,10 +317,9 @@ def generate_title(
             }
         ],
         text_format=TitleResponse,
+        text={"verbosity": "low"},
         reasoning={"effort": "low"},
-        temperature=0.6,
         max_output_tokens=100,
-        verbosity="low",
     )
     parsed = response.output_parsed
     if not parsed or not parsed.title:
