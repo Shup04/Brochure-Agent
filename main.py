@@ -17,6 +17,7 @@ from typing import Callable, Iterable, Sequence
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from PIL import Image
+from pptx.util import Pt
 
 
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -145,8 +146,8 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
         "Do not invent facts. "
         "Create a short_address that is just the street address unit and street, like '4-1616 Happyvale Ave'. "
         "Do not include city, province, or postal code in short_address. "
-        "Create 4-6 summary_bullets that each read like a strong brochure bullet point, not a sentence fragment. "
-        "Each bullet should be roughly 14-24 words. "
+        "Create 6-7 summary_bullets that each read like a strong brochure bullet point, not a sentence fragment. "
+        "Each bullet should be roughly 18-32 words. "
         "Normalize labels and keep room order as presented. "
         "For feature_rows, output rows in this preferred order when available: "
         "Location, Style, Heating, Fireplace, Parking, Includes, Age, Taxes, Lot Size. "
@@ -155,7 +156,7 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
         "Parking='2 Car Garage' and 'Additional Parking'; Includes='Dishwasher', 'Electric Range', 'Refrigerator', 'Washer/Dryer'; "
         "Age='42 Years'; Taxes='$3,145 (2025)'; Lot Size='.23 Acres'. "
         "Do not include MLS numbers, strata fee details, major area labels, or long administrative text in feature_rows. "
-        "For room_sections, preserve meaningful sections like Main/Lower/Basement/Upper where possible. "
+        "For room_sections, preserve meaningful sections like Main/Basement/Upstairs/Lower where possible. "
         "Each section title should be short and brochure-ready, and area_text should be a concise value like '1,081 sq. ft.' "
         "without repeating the word Total. "
         "Use area hints from nearby values such as Above Grade, Below Grade, 1st, Lower, or Bsmt when present. "
@@ -382,11 +383,11 @@ def generate_brochure_copy(
         model=model,
         instructions=(
             "Write brochure copy for a real-estate flyer. "
-            "Return one title, 4-6 summary bullets, and one caption object for each gallery image. "
+            "Return one title, 6-7 summary bullets, and one caption object for each gallery image. "
             "The title must read like a polished headline, not a list of features. "
             "It should evoke the home and lifestyle, be specific, and stay in title case. "
             "Avoid comma-spliced feature lists. "
-            "Each summary bullet should be a complete, brochure-ready point of roughly 14-24 words. "
+            "Each summary bullet should be a complete, brochure-ready point of roughly 18-32 words. "
             "Each caption object must include the exact file_name provided for that image. "
             "Each caption should be balanced and concise, ideally 70-110 characters, and should fit a small caption box. "
             "Do not repeat nearly identical captions. "
@@ -443,6 +444,15 @@ def clean_bullet_text(text: str) -> str:
     return " ".join(text.split()).lstrip("-• ").strip()
 
 
+def is_size_line(text: str) -> bool:
+    value = " ".join(text.split()).strip()
+    if not value:
+        return False
+    if value == "x":
+        return True
+    return bool(re.search(r"\d+'\s*\d*\"?\s*x\s*\d+'\s*\d*\"?", value))
+
+
 def build_text_mapping(
     listing: ListingExtraction, brochure_copy: BrochureCopyResponse, gallery_images: Sequence[SelectedImage]
 ) -> dict[str, str]:
@@ -478,8 +488,7 @@ def format_total(total_sqft: str | None) -> str:
 
 def normalize_sqft_text(value: str) -> str:
     compact = " ".join(value.split())
-    if "sq" in compact.lower():
-        return compact
+    compact = re.sub(r"\(Total\)", "", compact, flags=re.IGNORECASE).strip()
     match = re.search(r"[\d,.]+", compact)
     if not match:
         return compact
@@ -505,9 +514,21 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
     values_by_label = {row.label.strip().lower(): [v.strip() for v in row.values if v.strip()] for row in feature_rows}
 
     location_values = values_by_label.get("location", [])
-    location = next((value for value in location_values if "brock" in value.lower()), "")
-    if not location and re.search(r"Brocklehurst", raw_text, flags=re.IGNORECASE):
-        location = "Brocklehurst"
+    location = ""
+    for value in location_values:
+        if "-" in value:
+            candidate = value.split("-", 1)[1].strip()
+            if candidate:
+                location = candidate
+                break
+        if value and value.lower() != "kamloops and district":
+            location = value
+            break
+    if not location:
+        for area in ["Brocklehurst", "Aberdeen", "Sahali", "Valleyview", "Juniper Ridge", "Westsyde", "North Kamloops"]:
+            if re.search(area, raw_text, flags=re.IGNORECASE):
+                location = area
+                break
 
     style = next((value for value in values_by_label.get("style", []) if len(value) < 40), "")
 
@@ -526,16 +547,35 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
             parking_clean.append(f"{garage_spaces} Car Garage")
     if total_match and garage_match and int(float(total_match.group(1))) > int(float(garage_match.group(1))):
         parking_clean.append("Additional Parking")
+    if not parking_clean:
+        garage_match = re.search(r"Garage Spaces\s+(\d+(?:\.\d+)?)", raw_text, flags=re.IGNORECASE)
+        total_match = re.search(r"Parking Total\s+(\d+(?:\.\d+)?)", raw_text, flags=re.IGNORECASE)
+        if garage_match:
+            garage_spaces = int(float(garage_match.group(1)))
+            if garage_spaces > 0:
+                parking_clean.append(f"{garage_spaces} Car Garage")
+        if total_match and garage_match and int(float(total_match.group(1))) > int(float(garage_match.group(1))):
+            parking_clean.append("Additional Parking")
 
     include_clean: list[str] = []
     include_source = values_by_label.get("includes", [])
     for appliance in ["Dishwasher", "Electric Range", "Refrigerator", "Washer/Dryer"]:
         if any(appliance.lower() in value.lower() for value in include_source):
             include_clean.append(appliance)
+    for extra_feature, patterns in {
+        "Deck": [r"\bDeck\b", r"\bCovered, Deck\b"],
+        "Balcony": [r"\bBalcony\b"],
+        "Private Yard": [r"\bPrivate Yard\b", r"\bfenced backyard\b", r"\bfenced yard\b"],
+    }.items():
+        if any(re.search(pattern, raw_text, flags=re.IGNORECASE) for pattern in patterns):
+            include_clean.append(extra_feature)
+    include_clean = list(dict.fromkeys(include_clean))
 
     age_clean: list[str] = []
     age_source = " | ".join(values_by_label.get("age", []))
     built_match = re.search(r"(?:Year Built|Built)\s*(\d{4})", age_source, flags=re.IGNORECASE)
+    if not built_match:
+        built_match = re.search(r"Year Built\s+(\d{4})", raw_text, flags=re.IGNORECASE)
     if built_match:
         built_year = int(built_match.group(1))
         listing_year_match = re.search(r"Date Listed\s+\w+\s+\d{1,2}/(\d{2})", raw_text)
@@ -562,6 +602,10 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
 
 
 def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> list[RoomSection]:
+    parsed_from_raw = parse_room_sections_from_raw(raw_text)
+    if parsed_from_raw:
+        return parsed_from_raw
+
     area_hints = extract_area_hints(raw_text)
     cleaned_sections: list[RoomSection] = []
     for section in room_sections:
@@ -569,14 +613,16 @@ def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> 
         title_lower = title.lower()
         if title_lower in {"1st", "first", "main floor", "upper main"}:
             title = "Main"
-        elif title_lower in {"lower floor", "basement", "bsmt"}:
-            title = "Lower"
+        elif title_lower in {"lower floor", "basement", "bsmt", "lower"}:
+            title = "Basement"
+        elif title_lower in {"2nd", "second", "upstairs", "upper"}:
+            title = "Upstairs"
 
         area_text = section.area_text.strip()
         if not area_text or "not specified" in area_text.lower():
             if title.lower() == "main" and "main" in area_hints:
                 area_text = area_hints["main"]
-            elif title.lower() == "lower" and "lower" in area_hints:
+            elif title.lower() == "basement" and "lower" in area_hints:
                 area_text = area_hints["lower"]
 
         rooms: list[RoomEntry] = []
@@ -595,6 +641,103 @@ def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> 
             rooms.append(RoomEntry(name=name, size=size))
         cleaned_sections.append(RoomSection(title=title, area_text=area_text, rooms=rooms))
     return cleaned_sections
+
+
+def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
+    lines = [line.strip() for line in raw_text.splitlines()]
+    try:
+        start = next(i for i, line in enumerate(lines) if line.startswith("ROOMS (Total:"))
+        end = next(i for i, line in enumerate(lines[start + 1 :], start + 1) if line == "BUILDING")
+    except StopIteration:
+        return []
+
+    block = lines[start:end]
+    area_hints = extract_area_hints(raw_text)
+
+    try:
+        total_area_idx = block.index("Total Area")
+        bsmt_idx = block.index("Bsmt")
+    except ValueError:
+        return []
+
+    room_names = [line for line in block[total_area_idx + 1 : bsmt_idx] if line]
+    if not room_names:
+        return []
+
+    main_sizes: list[str] = []
+    basement_sizes: list[str] = []
+    trailing_sizes: list[str] = []
+
+    for idx, line in enumerate(block):
+        if line == "1st":
+            for candidate in block[idx + 1 :]:
+                if candidate in {"Beds Suite", "Baths Suite", "BUILDING"}:
+                    break
+                if is_size_line(candidate):
+                    main_sizes.append(candidate)
+        if line == "Lower":
+            for candidate in block[idx + 1 :]:
+                if candidate == "1st":
+                    break
+                if is_size_line(candidate):
+                    basement_sizes.append(candidate)
+
+    # Some basement room sizes spill just after the BUILDING header in the PDF text extraction.
+    for candidate in lines[end : min(len(lines), end + 30)]:
+        if candidate == "Heating":
+            break
+        if is_size_line(candidate):
+            trailing_sizes.append(candidate)
+
+    basement_sizes.extend(trailing_sizes[: max(0, len(room_names) - len(main_sizes) - len(basement_sizes))])
+    if not main_sizes:
+        return []
+
+    main_names = room_names[: len(main_sizes)]
+    basement_names = room_names[len(main_sizes) :]
+
+    # If one generic bedroom belongs in the basement, move it across until counts match.
+    while len(basement_names) < len(basement_sizes):
+        moved = False
+        for idx in range(len(main_names) - 1, -1, -1):
+            if main_names[idx] == "Bedroom":
+                basement_names.insert(0, main_names.pop(idx))
+                moved = True
+                break
+        if not moved:
+            break
+
+    def normalize_room(name: str, size: str) -> RoomEntry:
+        clean_name = name.strip()
+        clean_size = " ".join(size.split()).strip()
+        if "Full 4 PCE" in clean_name:
+            clean_name = "Bathroom"
+            clean_size = "4 piece"
+        elif "Half 2 PCE" in clean_name:
+            clean_name = "Ensuite"
+            clean_size = "2 piece"
+        elif clean_size == "x":
+            clean_size = ""
+        return RoomEntry(name=clean_name, size=clean_size)
+
+    sections: list[RoomSection] = []
+    if main_names:
+        sections.append(
+            RoomSection(
+                title="Main",
+                area_text=area_hints.get("main", ""),
+                rooms=[normalize_room(name, size) for name, size in zip(main_names, main_sizes)],
+            )
+        )
+    if basement_names:
+        sections.append(
+            RoomSection(
+                title="Basement",
+                area_text=area_hints.get("lower", ""),
+                rooms=[normalize_room(name, size) for name, size in zip(basement_names, basement_sizes)],
+            )
+        )
+    return sections
 
 
 def clone_run_style(source_run, dest_run) -> None:
@@ -684,13 +827,35 @@ def populate_summary_block(shape, bullets: Sequence[str]) -> None:
     run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
 
-    values = list(bullets)[:6] or [""]
+    values = list(bullets)[:7] or [""]
     for index, bullet in enumerate(values):
         paragraph = text_frame.paragraphs[0] if index == 0 else text_frame.add_paragraph()
         apply_paragraph_style(paragraph_style, paragraph)
         paragraph.text = bullet
         if paragraph.runs:
             apply_run_style_from_snapshot(paragraph.runs[0], run_style)
+    distribute_summary_spacing(shape, text_frame, run_style)
+
+
+def distribute_summary_spacing(shape, text_frame, run_style: dict) -> None:
+    paragraphs = [p for p in text_frame.paragraphs if "".join(run.text for run in p.runs).strip()]
+    if len(paragraphs) < 2:
+        return
+
+    font_size = run_style.get("size")
+    font_points = font_size.pt if font_size is not None else 14
+    estimated_used = len(paragraphs) * font_points * 1.8
+    remaining = max(0.0, shape.height.pt - estimated_used)
+    per_gap = min(6.0, remaining / max(1, len(paragraphs) - 1))
+
+    first_seen = False
+    for paragraph in paragraphs:
+        if not first_seen:
+            paragraph.space_before = Pt(0)
+            first_seen = True
+        else:
+            paragraph.space_before = Pt(per_gap)
+        paragraph.space_after = Pt(0)
 
 
 def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
@@ -701,6 +866,8 @@ def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
     paragraph_style = template_paragraph
     run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
+    label_count = 0
+    child_count = 0
 
     first = True
     for row in feature_rows:
@@ -710,6 +877,7 @@ def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
 
         paragraph = text_frame.paragraphs[0] if first else text_frame.add_paragraph()
         first = False
+        label_count += 1
         apply_paragraph_style(paragraph_style, paragraph)
         paragraph.text = f"{row.label}:\t{values[0]}"
         for run in paragraph.runs:
@@ -717,10 +885,40 @@ def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
 
         for extra_value in values[1:]:
             extra = text_frame.add_paragraph()
+            child_count += 1
             apply_paragraph_style(paragraph_style, extra)
             extra.text = f"\t{extra_value}"
             for run in extra.runs:
                 apply_run_style_from_snapshot(run, run_style)
+
+    distribute_feature_spacing(shape, text_frame, label_count, child_count, run_style)
+
+
+def distribute_feature_spacing(shape, text_frame, label_count: int, child_count: int, run_style: dict) -> None:
+    paragraphs = [p for p in text_frame.paragraphs if "".join(run.text for run in p.runs).strip()]
+    if not paragraphs:
+        return
+
+    font_size = run_style.get("size")
+    font_points = font_size.pt if font_size is not None else 14
+    base_line_points = font_points * 1.2
+    estimated_used = len(paragraphs) * base_line_points
+    remaining = max(0.0, shape.height.pt - estimated_used)
+    total_units = max(1, label_count * 2 + child_count)
+    points_per_unit = min(3.5, remaining / total_units)
+
+    first_seen = False
+    for paragraph in paragraphs:
+        text = "".join(run.text for run in paragraph.runs).strip()
+        if not first_seen:
+            paragraph.space_before = Pt(0)
+            first_seen = True
+            continue
+        units = 1
+        if ":\t" in text:
+            units = 2
+        paragraph.space_before = Pt(points_per_unit * units)
+        paragraph.space_after = Pt(0)
 
 
 def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
@@ -850,8 +1048,10 @@ def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -
 
     logger("Generating brochure copy...")
     brochure_copy = generate_brochure_copy(client, config.model, listing, main_image, gallery_images)
-    for image, caption in zip(gallery_images, brochure_copy.captions):
-        image.caption = caption
+    caption_map = {item.file_name: item.caption for item in brochure_copy.captions}
+    for image in gallery_images:
+        if image.path.name in caption_map:
+            image.caption = caption_map[image.path.name]
 
     text_mapping = build_text_mapping(listing, brochure_copy, gallery_images)
     text_mapping["{{SUMMARY}}"] = "\n".join(brochure_copy.summary_bullets or listing.summary_bullets)
