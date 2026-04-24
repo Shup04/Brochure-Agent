@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import re
+
+
+def log_print(message: str) -> None:
+    print(message)
+
+
+def clean_bullet_text(text: str) -> str:
+    return " ".join(text.split()).lstrip("-• ").strip()
+
+
+def clean_caption(text: str) -> str:
+    value = " ".join(text.split())
+    if not value:
+        return "Beautiful space with strong natural light and inviting everyday comfort."
+    if len(value) > 92:
+        value = value[:92].rsplit(" ", 1)[0]
+    value = value.rstrip(". ")
+    return f"{value}."
+
+
+def normalize_scene_type(scene_type: str) -> str:
+    value = scene_type.strip().lower().replace(" ", "_")
+    allowed = {
+        "front_exterior",
+        "backyard",
+        "deck_patio",
+        "living_room",
+        "dining_room",
+        "kitchen",
+        "primary_bedroom",
+        "bedroom",
+        "bathroom",
+        "rec_room",
+        "laundry",
+        "garage",
+        "view",
+        "other_exterior",
+        "other",
+    }
+    return value if value in allowed else "other"
+
+
+def format_beds_and_baths(bedrooms: int | None, bathrooms: int | None) -> str:
+    bed_text = f"{bedrooms} Bedroom" if bedrooms == 1 else f"{bedrooms} Bedrooms" if bedrooms else "Bedrooms"
+    bath_text = f"{bathrooms} Bath" if bathrooms == 1 else f"{bathrooms} Baths" if bathrooms else "Baths"
+    return f"{bed_text} & {bath_text}"
+
+
+def normalize_sqft_text(value: str) -> str:
+    compact = " ".join(value.split())
+    compact = re.sub(r"\(Total\)", "", compact, flags=re.IGNORECASE).strip()
+    match = re.search(r"[\d,.]+", compact)
+    if not match:
+        return compact
+    return f"{match.group(0)} sq. ft."
+
+
+def format_total(total_sqft: str | None) -> str:
+    if not total_sqft:
+        return "Total"
+    return f"Total ({normalize_sqft_text(total_sqft)})"
+
+
+def is_size_line(text: str) -> bool:
+    value = " ".join(text.split()).strip()
+    if not value:
+        return False
+    if value == "x":
+        return True
+    return bool(re.search(r"\d+'\s*\d*\"?\s*x\s*\d+'\s*\d*\"?", value))
+
