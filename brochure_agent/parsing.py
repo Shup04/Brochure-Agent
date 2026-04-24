@@ -232,7 +232,18 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
 
     style = next((value for value in values_by_label.get("style", []) if len(value) < 40), "")
 
-    heating_clean = [candidate for candidate in ["Forced Air", "Central Air", "Natural Gas"] if any(candidate.lower() in value.lower() for value in values_by_label.get("heating", []))]
+    heating_clean = [
+        candidate
+        for candidate in ["Forced Air", "Central Air", "Natural Gas"]
+        if any(candidate.lower() in value.lower() for value in values_by_label.get("heating", []))
+    ]
+
+    fireplace_clean: list[str] = []
+    fireplace_match = re.search(r"Fireplace\s+([^\n]+)", raw_text, flags=re.IGNORECASE)
+    if fireplace_match:
+        fireplace_value = fireplace_match.group(1).strip()
+        if fireplace_value and fireplace_value.lower() not in {"", "no", "none"}:
+            fireplace_clean.append(fireplace_value)
 
     parking_source = " | ".join(values_by_label.get("parking", []))
     parking_clean: list[str] = []
@@ -243,13 +254,19 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
     if total_match and garage_match and int(float(total_match.group(1))) > int(float(garage_match.group(1))):
         parking_clean.append("Additional Parking")
 
-    include_clean = []
+    include_clean: list[str] = []
     for appliance in ["Dishwasher", "Electric Range", "Refrigerator", "Washer/Dryer"]:
         if any(appliance.lower() in value.lower() for value in values_by_label.get("includes", [])):
             include_clean.append(appliance)
     for extra_feature, patterns in {"Deck": [r"\bDeck\b", r"\bCovered, Deck\b"], "Balcony": [r"\bBalcony\b"], "Private Yard": [r"\bPrivate Yard\b", r"\bfenced backyard\b", r"\bfenced yard\b"]}.items():
         if any(re.search(pattern, raw_text, flags=re.IGNORECASE) for pattern in patterns):
             include_clean.append(extra_feature)
+    if re.search(r"Laundry\s+In Unit", raw_text, flags=re.IGNORECASE):
+        include_clean.append("In-Unit Laundry")
+    if re.search(r"Cats OK|Dogs OK|Pets", raw_text, flags=re.IGNORECASE):
+        include_clean.append("Pet Friendly")
+    if re.search(r"\bRentals\b|\bRental", raw_text, flags=re.IGNORECASE):
+        include_clean.append("Rental Friendly")
     include_clean = list(dict.fromkeys(include_clean))
 
     age_clean: list[str] = []
@@ -258,21 +275,32 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
         built_year = int(built_match.group(1))
         age_clean.append(f"{2025 - built_year} Years")
 
+    lot_size_clean: list[str] = []
+    lot_acres_match = re.search(r"Lot Acres\s+([0-9.]+)", raw_text, flags=re.IGNORECASE)
+    if lot_acres_match and lot_acres_match.group(1) not in {"0", "0.0"}:
+        lot_size_clean.append(f"{lot_acres_match.group(1)} Acres")
+
     taxes = next((value for value in values_by_label.get("taxes", []) if "$" in value), "")
 
-    cleaned: list[FeatureRow] = []
-    for label, values in [
-        ("Location", [location] if location else []),
-        ("Style", [style] if style else []),
-        ("Heating", heating_clean),
-        ("Parking", parking_clean),
-        ("Includes", include_clean),
-        ("Age", age_clean),
-        ("Taxes", [taxes] if taxes else []),
-    ]:
-        if values and not any("not provided" in value.lower() for value in values):
-            cleaned.append(FeatureRow(label=label, values=values))
-    return cleaned
+    prioritized_rows: list[tuple[int, FeatureRow]] = []
+
+    def add_row(priority: int, label: str, values: list[str]) -> None:
+        cleaned_values = [value.strip() for value in values if value and "not provided" not in value.lower()]
+        if cleaned_values:
+            prioritized_rows.append((priority, FeatureRow(label=label, values=cleaned_values)))
+
+    add_row(100, "Location", [location] if location else [])
+    add_row(95, "Style", [style] if style else [])
+    add_row(90, "Heating", heating_clean)
+    add_row(88, "Fireplace", fireplace_clean)
+    add_row(85, "Parking", parking_clean)
+    add_row(80, "Includes", include_clean)
+    add_row(72, "Age", age_clean)
+    add_row(68, "Taxes", [taxes] if taxes else [])
+    add_row(64, "Lot Size", lot_size_clean)
+
+    prioritized_rows.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in prioritized_rows]
 
 
 def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
@@ -323,4 +351,3 @@ def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> 
     if parsed:
         return parsed
     return list(room_sections)
-
