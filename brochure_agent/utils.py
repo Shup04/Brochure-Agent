@@ -64,7 +64,16 @@ def normalize_sqft_text(value: str) -> str:
     match = re.search(r"[\d,.]+", compact)
     if not match:
         return compact
-    return f"{match.group(0)} sq. ft."
+    raw_number = match.group(0).replace(",", "")
+    try:
+        number = float(raw_number)
+    except ValueError:
+        return f"{match.group(0)} sq. ft."
+    if number.is_integer() or len(raw_number.split(".")[-1]) > 1:
+        formatted = f"{round(number):,}"
+    else:
+        formatted = f"{number:,.1f}"
+    return f"{formatted} sq. ft."
 
 
 def format_total(total_sqft: str | None) -> str:

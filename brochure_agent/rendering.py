@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 from typing import Sequence
 from pptx.util import Pt
@@ -12,15 +13,42 @@ from .models import FeatureRow, ListingExtraction, RoomSection, SelectedImage
 from .utils import format_beds_and_baths, format_total, normalize_sqft_text
 
 
+SUMMARY_TOP_MARGIN_PT = 34
+ROOM_TOP_MARGIN_PT = 30
+ROOM_CONTENT_HEIGHT_PT = 420
+
+
 def _pt(value: float):
     pptx_util = require_dependency("pptx.util", "python-pptx")
     return pptx_util.Pt(value)
 
 
+def set_textbox_top_margin(text_frame, points: float) -> None:
+    text_frame.margin_top = _pt(points)
+
+
+def shorten_street_suffixes(address: str) -> str:
+    replacements = {
+        "Avenue": "Ave",
+        "Street": "St",
+        "Road": "Rd",
+        "Drive": "Dr",
+        "Court": "Ct",
+        "Place": "Pl",
+        "Crescent": "Cres",
+        "Boulevard": "Blvd",
+        "Lane": "Ln",
+    }
+    shortened = address.strip()
+    for long_name, short_name in replacements.items():
+        shortened = re.sub(rf"\b{long_name}\b\.?", short_name, shortened, flags=re.IGNORECASE)
+    return shortened
+
+
 def build_text_mapping(listing: ListingExtraction, brochure_copy, gallery_images: Sequence[SelectedImage]) -> dict[str, str]:
     caption_map = {item.file_name: item.caption for item in brochure_copy.captions}
     mapping = {
-        "{{ADDRESS}}": listing.short_address,
+        "{{ADDRESS}}": shorten_street_suffixes(listing.short_address),
         "{{PRICE}}": listing.price,
         "{{BEDS_AND_BATHS}}": format_beds_and_baths(listing.bedrooms, listing.bathrooms),
         "{{TITLE}}": brochure_copy.title,
@@ -113,6 +141,7 @@ def replace_text_in_shape(shape, replacements: dict[str, str]) -> None:
 
 def populate_summary_block(shape, bullets: Sequence[str]) -> None:
     text_frame = shape.text_frame
+    set_textbox_top_margin(text_frame, SUMMARY_TOP_MARGIN_PT)
     template_paragraph = text_frame.paragraphs[0]
     run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
@@ -140,12 +169,15 @@ def distribute_summary_spacing(shape, text_frame, run_style: dict) -> None:
         text = "".join(run.text for run in paragraph.runs).strip()
         visual_line_count += max(1, math.ceil(len(text) / chars_per_line))
 
-    estimated_text_height = visual_line_count * font_points * 1.15
-    remaining = max(0.0, shape.height.pt - estimated_text_height)
+    usable_height = max(0.0, shape.height.pt - SUMMARY_TOP_MARGIN_PT)
+    estimated_text_height = visual_line_count * font_points * 1.12
+    remaining = max(0.0, usable_height - estimated_text_height)
     per_gap = remaining / max(1, len(paragraphs) - 1)
 
-    # Leave a little safety because PowerPoint wrapping is not exposed by python-pptx.
-    per_gap = max(2.0, min(18.0, per_gap * 0.9))
+    # Leave safety because PowerPoint wrapping is not exposed by python-pptx.
+    # This still spreads the bullets through the box without using the full
+    # estimated remaining height, which previously caused overflow.
+    per_gap = max(5.0, min(30.0, per_gap * 0.78))
     for idx, paragraph in enumerate(paragraphs):
         paragraph.space_before = _pt(0 if idx == 0 else per_gap)
         paragraph.space_after = _pt(0)
@@ -163,6 +195,7 @@ def format_feature_child_line(value: str) -> str:
 
 def populate_feature_block(shape, feature_rows: Sequence[FeatureRow]) -> None:
     text_frame = shape.text_frame
+    set_textbox_top_margin(text_frame, 40)
     template_paragraph = text_frame.paragraphs[0]
     run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
@@ -256,6 +289,8 @@ def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
     from pptx.enum.text import PP_ALIGN
 
     text_frame = shape.text_frame
+    shape.height = _pt(ROOM_CONTENT_HEIGHT_PT)
+    set_textbox_top_margin(text_frame, ROOM_TOP_MARGIN_PT)
     template_paragraph = text_frame.paragraphs[0]
     run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
@@ -266,21 +301,23 @@ def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
     first = True
     for section in room_sections:
         heading = text_frame.paragraphs[0] if first else text_frame.add_paragraph()
+        is_first_heading = first
         first = False
         apply_paragraph_style(template_paragraph, heading)
         heading.alignment = PP_ALIGN.CENTER
+        heading.space_before = _pt(0 if is_first_heading else 12)
+        heading.space_after = _pt(2)
         heading.text = f"{section.title} ({normalize_sqft_text(section.area_text)})"
         for run in heading.runs:
             apply_run_style_from_snapshot(run, run_style)
             run.font.italic = True
 
-        spacer = text_frame.add_paragraph()
-        spacer.text = ""
-
         for room in section.rooms:
             row = text_frame.add_paragraph()
             apply_paragraph_style(template_paragraph, row)
             row.alignment = None
+            row.space_before = _pt(0)
+            row.space_after = _pt(0)
             row.text = f"{room.name}\t{room.size}"
             for run in row.runs:
                 apply_run_style_from_snapshot(run, run_style)

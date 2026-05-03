@@ -265,7 +265,10 @@ def brochure_image_score(image: SelectedImage) -> float:
 
 def extract_area_hints(raw_text: str) -> dict[str, str]:
     hints: dict[str, str] = {}
-    patterns = {"main": [r"Above Grade\s+([\d,.]+)", r"1st\s+([\d,.]+)"], "lower": [r"Below Grade\s+([\d,.]+)", r"Bsmt\s+([\d,.]+)"]}
+    patterns = {
+        "main": [r"Above Grade\s*([\d,.]+)", r"\b1st\s+([\d,.]+)"],
+        "lower": [r"Below Grade\s*([\d,.]+)", r"\bBsmt\s+([\d,.]+)"],
+    }
     for key, regexes in patterns.items():
         for pattern in regexes:
             match = re.search(pattern, raw_text, flags=re.IGNORECASE)
@@ -379,6 +382,10 @@ def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
     except StopIteration:
         return []
 
+    mls_table_sections = parse_mls_room_table(lines[start:end], raw_text)
+    if mls_table_sections:
+        return mls_table_sections
+
     room_labels = {
         "Kitchen",
         "Living Room",
@@ -491,17 +498,107 @@ def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
     return sections
 
 
+def parse_mls_room_table(block_lines: Sequence[str], raw_text: str) -> list[RoomSection]:
+    """Parse compact MLS room tables before falling back to model room sections.
+
+    The PDF text extraction collapses table columns, so this uses conservative
+    room-name heuristics instead of asking the model to infer floor placement.
+    """
+
+    area_hints = extract_area_hints(raw_text)
+    total_area_match = re.search(r"Total Area\s+([\d,.]+)\s+([\d,.]+)", "\n".join(block_lines), flags=re.IGNORECASE)
+    if total_area_match:
+        area_hints.setdefault("lower", normalize_sqft_text(total_area_match.group(1)))
+        area_hints.setdefault("main", normalize_sqft_text(total_area_match.group(2)))
+
+    main_rooms: list[RoomEntry] = []
+    lower_rooms: list[RoomEntry] = []
+    lower_room_names = {"Bedroom", "Family Room", "Rec Room", "Storage", "Utility Room"}
+
+    for line in block_lines:
+        parsed = parse_room_table_line(line)
+        if not parsed:
+            continue
+        room_name, values = parsed
+        if not values:
+            continue
+
+        if room_name == "Bedroom" and len(values) > 1:
+            lower_rooms.append(RoomEntry(name=room_name, size=values[0]))
+            main_rooms.append(RoomEntry(name=room_name, size=values[1]))
+            continue
+
+        target = lower_rooms if room_name in lower_room_names and room_name not in {"Bedroom"} else main_rooms
+        target.append(RoomEntry(name=room_name, size=values[0]))
+
+    sections: list[RoomSection] = []
+    if main_rooms:
+        sections.append(RoomSection(title="Main", area_text=area_hints.get("main", ""), rooms=main_rooms))
+    if lower_rooms:
+        sections.append(RoomSection(title="Basement", area_text=area_hints.get("lower", ""), rooms=lower_rooms))
+    return sections
+
+
+def parse_room_table_line(line: str) -> tuple[str, list[str]] | None:
+    room_names = [
+        "Primary Bedroom",
+        "Bathroom - Full",
+        "Ensuite - Half",
+        "Living Room",
+        "Dining Room",
+        "Family Room",
+        "Utility Room",
+        "Laundry Room",
+        "Rec Room",
+        "Bedroom",
+        "Bathroom",
+        "Kitchen",
+        "Laundry",
+        "Storage",
+    ]
+    room_name = next((name for name in room_names if line.startswith(name)), "")
+    if not room_name:
+        return None
+
+    remainder = line[len(room_name) :].strip()
+    if room_name in {"Bathroom - Full", "Ensuite - Half"}:
+        piece_match = re.search(r"\b(\d+\s*PCE|\d+\s*piece)\b", remainder, flags=re.IGNORECASE)
+        if not piece_match:
+            return None
+        return room_name, [piece_match.group(1).upper().replace(" ", " ")]
+
+    size_pattern = r"\d+'\s*(?:\d+\")?\s*x\s*\d+'\s*(?:\d+\")?"
+    sizes = [re.sub(r"\s+", " ", match.group(0)).strip() for match in re.finditer(size_pattern, remainder)]
+    return room_name, sizes
+
+
 def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> list[RoomSection]:
     parsed = parse_room_sections_from_raw(raw_text)
     if parsed:
-        return parsed
+        return sort_room_sections(parsed)
     cleaned_sections: list[RoomSection] = []
     for section in room_sections:
         title = normalize_room_section_title(section.title)
         rooms = [room for room in section.rooms if room.name.strip()]
         if rooms:
             cleaned_sections.append(RoomSection(title=title, area_text=section.area_text, rooms=rooms))
-    return cleaned_sections
+    return sort_room_sections(cleaned_sections)
+
+
+def sort_room_sections(room_sections: Sequence[RoomSection]) -> list[RoomSection]:
+    """Use brochure-friendly floor order while preserving unknown sections."""
+
+    order = {
+        "Main": 0,
+        "Upper": 1,
+        "Second Floor": 1,
+        "Third Floor": 2,
+        "Fourth Floor": 3,
+        "Lower": 4,
+        "Basement": 5,
+    }
+    sorted_sections = sorted(enumerate(room_sections), key=lambda item: (order.get(item[1].title, 50), item[0]))
+    return [section for _, section in sorted_sections]
 
 
 def normalize_room_section_title(title: str) -> str:
