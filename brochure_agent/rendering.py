@@ -260,6 +260,9 @@ def populate_room_block(shape, room_sections: Sequence[RoomSection]) -> None:
     run_style = capture_first_run_style(template_paragraph)
     text_frame.clear()
 
+    if not room_sections:
+        return
+
     first = True
     for section in room_sections:
         heading = text_frame.paragraphs[0] if first else text_frame.add_paragraph()

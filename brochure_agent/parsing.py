@@ -436,5 +436,33 @@ def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> 
     parsed = parse_room_sections_from_raw(raw_text)
     if parsed:
         return parsed
-    # Be deterministic: if raw parsing fails, don't pass model-invented section titles through.
-    return []
+    cleaned_sections: list[RoomSection] = []
+    for section in room_sections:
+        title = normalize_room_section_title(section.title)
+        rooms = [room for room in section.rooms if room.name.strip()]
+        if rooms:
+            cleaned_sections.append(RoomSection(title=title, area_text=section.area_text, rooms=rooms))
+    return cleaned_sections
+
+
+def normalize_room_section_title(title: str) -> str:
+    value = title.strip().lower()
+    mapping = {
+        "bsmt": "Basement",
+        "basement": "Basement",
+        "lower": "Lower",
+        "lower floor": "Lower",
+        "1st": "Main",
+        "first": "Main",
+        "main": "Main",
+        "main floor": "Main",
+        "2nd": "Upper",
+        "second": "Upper",
+        "upper": "Upper",
+        "upstairs": "Upper",
+        "3rd": "Third Floor",
+        "third": "Third Floor",
+        "4th": "Fourth Floor",
+        "fourth": "Fourth Floor",
+    }
+    return mapping.get(value, title.strip() or "Rooms")
