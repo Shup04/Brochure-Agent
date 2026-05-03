@@ -166,13 +166,15 @@ def analyze_images(client: OpenAI, model: str, image_paths: Sequence[Path], logg
 
 
 def choose_images(ranked_images: Sequence[SelectedImage]) -> tuple[SelectedImage, list[SelectedImage]]:
-    main_image = next((img for img in ranked_images if img.front_exterior), None)
-    if main_image is None:
-        main_image = next((img for img in ranked_images if img.exterior), None)
-    if main_image is None:
-        main_image = ranked_images[0]
+    ranked_by_brochure_value = sorted(ranked_images, key=brochure_image_score, reverse=True)
 
-    candidates = [img for img in ranked_images if img.path != main_image.path]
+    main_image = next((img for img in ranked_by_brochure_value if img.front_exterior), None)
+    if main_image is None:
+        main_image = next((img for img in ranked_by_brochure_value if img.exterior), None)
+    if main_image is None:
+        main_image = ranked_by_brochure_value[0]
+
+    candidates = [img for img in ranked_by_brochure_value if img.path != main_image.path]
     selected: list[SelectedImage] = []
     scene_counts: Counter[str] = Counter()
     exterior_count = 0
@@ -201,7 +203,64 @@ def choose_images(ranked_images: Sequence[SelectedImage]) -> tuple[SelectedImage
             continue
         selected.append(image)
 
-    return main_image, selected[:10]
+    return main_image, order_gallery_images(selected[:10])
+
+
+def order_gallery_images(images: Sequence[SelectedImage]) -> list[SelectedImage]:
+    preferred_order = [
+        "living_room",
+        "kitchen",
+        "dining_room",
+        "primary_bedroom",
+        "bedroom",
+        "backyard",
+        "deck_patio",
+        "rec_room",
+        "bathroom",
+        "front_exterior",
+        "other_exterior",
+        "garage",
+        "laundry",
+        "view",
+        "other",
+    ]
+    order_index = {scene: idx for idx, scene in enumerate(preferred_order)}
+    return sorted(
+        images,
+        key=lambda image: (
+            order_index.get(image.scene_type, len(preferred_order)),
+            -brochure_image_score(image),
+            image.path.name,
+        ),
+    )
+
+
+def brochure_image_score(image: SelectedImage) -> float:
+    """Combine model quality score with brochure slot value.
+
+    The model's showcase score is useful, but it tends to overvalue open views and
+    repeated exterior shots. This weighting keeps the brochure focused on rooms
+    buyers expect to see first.
+    """
+    scene_priority = {
+        "living_room": 100,
+        "kitchen": 96,
+        "primary_bedroom": 90,
+        "backyard": 86,
+        "deck_patio": 82,
+        "dining_room": 78,
+        "rec_room": 74,
+        "bedroom": 70,
+        "bathroom": 64,
+        "front_exterior": 58,
+        "other_exterior": 44,
+        "garage": 38,
+        "laundry": 34,
+        "view": 28,
+        "other": 20,
+    }
+    priority = scene_priority.get(image.scene_type, 20)
+    return priority + (image.showcase_score * 4)
 
 
 def extract_area_hints(raw_text: str) -> dict[str, str]:

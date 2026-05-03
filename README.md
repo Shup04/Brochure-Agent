@@ -67,7 +67,7 @@ python main.py --cli \
   --output "/path/to/output-brochure.pptx"
 ```
 
-Default model: `gpt-5.4-nano`
+Default model: `gpt-5.5`
 
 ## Notes
 

@@ -38,7 +38,7 @@ def generate_brochure_copy(
         "Avoid comma-spliced feature lists. "
         "Each summary bullet should be a complete, brochure-ready point of roughly 14-24 words. "
         "Each caption object must include the exact file_name provided for that image. "
-        "Each caption should be balanced and concise, ideally 70-110 characters, and should fit a small caption box. "
+        "Each caption should be one complete sentence, ideally 70-100 characters, and should fit a small caption box. "
         "Do not repeat nearly identical captions. "
         "Do not mention file names in the caption text."
     )

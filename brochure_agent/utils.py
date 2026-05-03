@@ -15,10 +15,19 @@ def clean_caption(text: str) -> str:
     value = " ".join(text.split())
     if not value:
         return "Beautiful space with strong natural light and inviting everyday comfort."
-    if len(value) > 92:
-        value = value[:92].rsplit(" ", 1)[0]
-    value = value.rstrip(". ")
-    return f"{value}."
+    value = value.strip()
+
+    if len(value) <= 110 and value[-1] in ".!?":
+        return value
+    if len(value) <= 100:
+        return f"{value.rstrip('.!? ')}."
+
+    complete_sentence = re.match(r"^(.{45,110}?[.!?])(?:\s|$)", value)
+    if complete_sentence:
+        return complete_sentence.group(1).strip()
+
+    trimmed = value[:100].rsplit(" ", 1)[0].rstrip(",;:- ")
+    return f"{trimmed}."
 
 
 def normalize_scene_type(scene_type: str) -> str:
@@ -71,4 +80,3 @@ def is_size_line(text: str) -> bool:
     if value == "x":
         return True
     return bool(re.search(r"\d+'\s*\d*\"?\s*x\s*\d+'\s*\d*\"?", value))
-
