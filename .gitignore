@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local app state
+.codex
+.agents/
+
+# Private listing inputs and generated brochures
+*.pdf
+attachments/
+images/
+photos/
+inputs/
+outputs/
+brochures/
+brochure_output*.pptx
+*_brochure*.pptx
+test_output*.pptx
+
+# Office temporary files
+.~lock.*#
+
+# OS files
+.DS_Store
+Thumbs.db

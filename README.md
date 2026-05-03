@@ -91,6 +91,21 @@ python main.py --cli \
 
 Default model: `gpt-5.5`
 
+## Windows install and updates
+
+For a non-technical Windows user:
+
+1. Install Python from `python.org` and check `Add python.exe to PATH`.
+2. Install Git for Windows.
+3. Clone this repo.
+4. Double-click `Setup.bat`.
+5. Double-click `Set_API_Key.bat` once and paste the OpenAI API key.
+6. Double-click `Run_Brochure_App.bat` to open the app.
+
+When this repo gets updates, double-click `Update.bat`. It pulls the newest code and refreshes Python dependencies.
+
+Generated brochures, listing PDFs, photo folders, `.env` files, virtual environments, and Python cache files are ignored by Git so private brochure data should stay local.
+
 ## Notes
 
 - The app uses strict structured output for listing extraction and image analysis.
