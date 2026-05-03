@@ -37,6 +37,18 @@ And these image placeholders by shape name:
 pip install -r requirements.txt
 ```
 
+Tkinter is included with the normal Windows Python installer. On Linux, install the OS Tk package if `python main.py` falls back to CLI mode.
+
+Examples:
+
+```bash
+# Ubuntu/Debian
+sudo apt install python3-tk
+
+# Arch/EndeavourOS
+sudo pacman -S tk
+```
+
 3. Set your API key:
 
 ```bash
@@ -56,6 +68,16 @@ If your Python install includes Tk, the app opens a simple local desktop UI:
 ```bash
 python main.py
 ```
+
+On Windows, `run_gui.pyw` can also be launched with Python to open the GUI without needing command-line arguments.
+
+The GUI lets you choose:
+
+- Listing PDF
+- Image folder
+- PowerPoint template
+- Output `.pptx` location
+- OpenAI model
 
 If Tk is unavailable, or if you want command-line mode:
 
