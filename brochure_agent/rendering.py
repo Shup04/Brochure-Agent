@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from typing import Sequence
 from pptx.util import Pt
@@ -129,18 +130,30 @@ def distribute_summary_spacing(shape, text_frame, run_style: dict) -> None:
     paragraphs = [p for p in text_frame.paragraphs if "".join(run.text for run in p.runs).strip()]
     if len(paragraphs) < 2:
         return
+
     font_size = run_style.get("size")
     font_points = font_size.pt if font_size is not None else 14
-    estimated_used = len(paragraphs) * font_points * 1.8
-    remaining = max(0.0, shape.height.pt - estimated_used)
-    per_gap = min(6.0, remaining / max(1, len(paragraphs) - 1))
+    chars_per_line = max(24, int(shape.width.pt / (font_points * 0.48)))
+    visual_line_count = 0
+
+    for paragraph in paragraphs:
+        text = "".join(run.text for run in paragraph.runs).strip()
+        visual_line_count += max(1, math.ceil(len(text) / chars_per_line))
+
+    estimated_text_height = visual_line_count * font_points * 1.15
+    remaining = max(0.0, shape.height.pt - estimated_text_height)
+    per_gap = remaining / max(1, len(paragraphs) - 1)
+
+    # Leave a little safety because PowerPoint wrapping is not exposed by python-pptx.
+    per_gap = max(2.0, min(18.0, per_gap * 0.9))
     for idx, paragraph in enumerate(paragraphs):
         paragraph.space_before = _pt(0 if idx == 0 else per_gap)
         paragraph.space_after = _pt(0)
+        paragraph.line_spacing = 1.0
 
 
 def format_feature_parent_line(label: str, value: str) -> str:
-    tabs = "\t\t" if len(label) <= 5 else "\t"
+    tabs = "\t" if len(label) <= 5 else "\t"
     return f"{label}:{tabs}{value}"
 
 

@@ -320,7 +320,7 @@ def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
     except StopIteration:
         return []
 
-    room_names = [line for line in lines[start:end] if line in {
+    room_labels = {
         "Kitchen",
         "Living Room",
         "Dining Room",
@@ -331,16 +331,66 @@ def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
         "Laundry",
         "Family Room",
         "Storage",
-    }]
-    if len(room_names) < 8:
+        "Rec Room",
+        "Utility Room",
+        "Bedroom",
+        "Bathroom",
+    }
+    room_names = [line for line in lines[start:end] if line in room_labels]
+    if len(room_names) < 4:
         return []
 
     area_hints = extract_area_hints(raw_text)
-    main_sizes = ["10' 4\" x 13' 11\"", "14' 4\" x 14' 9\"", "9' 2\" x 8' 9\"", "11' 8\" x 10' 6\"", "8' 3\" x 8' 9\"", "4 piece", "2 piece", "9' 3\" x 3'"]
-    basement_sizes = ["12' 7\" x 12'", "9' 8\" x 9' 9\"", "19' 3\" x 12' 6\"", "18' 9\" x 6'"]
+    known_level_tokens = {"bsmt", "lower", "1st", "2nd", "3rd", "4th", "main", "upper", "upstairs", "basement"}
+    block_lines = lines[start:end]
 
-    main_names = room_names[:8]
-    basement_names = room_names[8:]
+    level_order: list[str] = []
+    level_sizes: dict[str, list[str]] = {}
+    current_level: str | None = None
+
+    for line in block_lines:
+        lowered = line.lower()
+        if lowered in known_level_tokens:
+            current_level = lowered
+            if current_level not in level_order:
+                level_order.append(current_level)
+            level_sizes.setdefault(current_level, [])
+            continue
+        if current_level and is_size_line(line):
+            level_sizes[current_level].append(line)
+
+    # Some size lines may appear immediately after BUILDING in this MLS format.
+    trailing_sizes = []
+    for candidate in lines[end : min(len(lines), end + 30)]:
+        if candidate in {"SERVICES", "Heating"}:
+            break
+        if is_size_line(candidate):
+            trailing_sizes.append(candidate)
+    if trailing_sizes:
+        target_level = next((level for level in level_order if level in {"bsmt", "lower", "basement"}), None)
+        if target_level:
+            level_sizes.setdefault(target_level, []).extend(trailing_sizes)
+
+    def normalize_level_name(level_token: str) -> str:
+        mapping = {
+            "bsmt": "Basement",
+            "basement": "Basement",
+            "lower": "Lower",
+            "1st": "Main",
+            "main": "Main",
+            "2nd": "Upper",
+            "upper": "Upper",
+            "upstairs": "Upper",
+            "3rd": "Third Floor",
+            "4th": "Fourth Floor",
+        }
+        return mapping.get(level_token, level_token.title())
+
+    normalized_levels = [normalize_level_name(token) for token in level_order]
+    ordered_size_groups = [level_sizes.get(token, []) for token in level_order]
+    flat_sizes = [size for group in ordered_size_groups for size in group]
+    if not flat_sizes:
+        return []
 
     def normalize_room(name: str, size: str) -> RoomEntry:
         if "Full 4 PCE" in name:
@@ -349,14 +399,42 @@ def parse_room_sections_from_raw(raw_text: str) -> list[RoomSection]:
             return RoomEntry(name="Ensuite", size="2 piece")
         return RoomEntry(name=name, size=size)
 
-    return [
-        RoomSection(title="Main", area_text=area_hints.get("main", ""), rooms=[normalize_room(name, size) for name, size in zip(main_names, main_sizes)]),
-        RoomSection(title="Basement", area_text=area_hints.get("lower", ""), rooms=[normalize_room(name, size) for name, size in zip(basement_names, basement_sizes)]),
-    ]
+    # If the raw room count and size count diverge, fall back to the shared prefix instead of inventing rows.
+    paired_names = room_names[: len(flat_sizes)]
+    paired_sizes = flat_sizes[: len(room_names)]
+
+    sections: list[RoomSection] = []
+    offset = 0
+    for token, normalized, sizes in zip(level_order, normalized_levels, ordered_size_groups):
+        count = len(sizes)
+        if count == 0:
+            continue
+        names_for_level = paired_names[offset : offset + count]
+        sizes_for_level = paired_sizes[offset : offset + count]
+        offset += count
+        if not names_for_level:
+            continue
+
+        area_text = ""
+        if normalized == "Main":
+            area_text = area_hints.get("main", "")
+        elif normalized in {"Basement", "Lower"}:
+            area_text = area_hints.get("lower", "")
+
+        sections.append(
+            RoomSection(
+                title=normalized,
+                area_text=area_text,
+                rooms=[normalize_room(name, size) for name, size in zip(names_for_level, sizes_for_level)],
+            )
+        )
+
+    return sections
 
 
 def clean_room_sections(room_sections: Sequence[RoomSection], raw_text: str) -> list[RoomSection]:
     parsed = parse_room_sections_from_raw(raw_text)
     if parsed:
         return parsed
-    return list(room_sections)
+    # Be deterministic: if raw parsing fails, don't pass model-invented section titles through.
+    return []
