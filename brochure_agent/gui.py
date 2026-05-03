@@ -5,20 +5,20 @@ import threading
 import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from tkinter.scrolledtext import ScrolledText
-from tkinter import ttk
 import tkinter as tk
+
+import customtkinter as ctk
 
 from .models import AppConfig, DEFAULT_MODEL
 from .pipeline import run_pipeline, validate_config
 
 
 class BrochureGui:
-    def __init__(self, root: tk.Tk, default_template: Path, default_model: str = DEFAULT_MODEL) -> None:
+    def __init__(self, root: ctk.CTk, default_template: Path, default_model: str = DEFAULT_MODEL) -> None:
         self.root = root
         self.root.title("Real Estate Brochure Generator")
-        self.root.geometry("840x620")
-        self.root.minsize(720, 520)
+        self.root.geometry("940x680")
+        self.root.minsize(820, 600)
 
         self.pdf_var = tk.StringVar()
         self.images_var = tk.StringVar()
@@ -29,56 +29,90 @@ class BrochureGui:
 
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.worker: threading.Thread | None = None
-        self.generate_button: ttk.Button | None = None
-        self.open_output_button: ttk.Button | None = None
-        self.log_widget: ScrolledText | None = None
+        self.generate_button: ctk.CTkButton | None = None
+        self.open_output_button: ctk.CTkButton | None = None
+        self.progress_bar: ctk.CTkProgressBar | None = None
+        self.log_widget: ctk.CTkTextbox | None = None
 
         self._build()
         self.root.after(100, self._drain_log_queue)
 
     def _build(self) -> None:
+        ctk.set_appearance_mode("System")
+        ctk.set_default_color_theme("blue")
+
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        main = ttk.Frame(self.root, padding=16)
-        main.grid(row=0, column=0, sticky="nsew")
-        main.columnconfigure(1, weight=1)
-        main.rowconfigure(7, weight=1)
+        main = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
+        main.grid(row=0, column=0, sticky="nsew", padx=22, pady=22)
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(2, weight=1)
 
-        title = ttk.Label(main, text="Generate a brochure", font=("", 18, "bold"))
-        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        header = ctk.CTkFrame(main, corner_radius=18)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        header.columnconfigure(0, weight=1)
 
-        subtitle = ttk.Label(main, text="Select the listing PDF, image folder, template, and where to save the PowerPoint.")
-        subtitle.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        title = ctk.CTkLabel(header, text="Real Estate Brochure Generator", font=ctk.CTkFont(size=26, weight="bold"))
+        title.grid(row=0, column=0, sticky="w", padx=20, pady=(18, 4))
 
-        self._path_row(main, 2, "Listing PDF", self.pdf_var, self._select_pdf)
-        self._path_row(main, 3, "Image Folder", self.images_var, self._select_image_folder)
-        self._path_row(main, 4, "Template", self.template_var, self._select_template)
-        self._path_row(main, 5, "Save As", self.output_var, self._select_output)
+        subtitle = ctk.CTkLabel(
+            header,
+            text="Choose a listing PDF, image folder, template, and output location. The app handles extraction, image selection, and PowerPoint rendering.",
+            anchor="w",
+            justify="left",
+        )
+        subtitle.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 18))
 
-        ttk.Label(main, text="Model").grid(row=6, column=0, sticky="w", pady=(4, 12))
-        ttk.Entry(main, textvariable=self.model_var).grid(row=6, column=1, columnspan=2, sticky="ew", pady=(4, 12))
+        body = ctk.CTkFrame(main, corner_radius=18)
+        body.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        body.columnconfigure(1, weight=1)
 
-        actions = ttk.Frame(main)
-        actions.grid(row=7, column=0, columnspan=3, sticky="new", pady=(0, 12))
-        actions.columnconfigure(2, weight=1)
+        self._path_row(body, 0, "Listing PDF", "The PDF or saved listing email.", self.pdf_var, self._select_pdf)
+        self._path_row(body, 1, "Image Folder", "Folder containing listing photos.", self.images_var, self._select_image_folder)
+        self._path_row(body, 2, "Template", "PowerPoint template with placeholders.", self.template_var, self._select_template)
+        self._path_row(body, 3, "Save As", "Where the generated brochure will be saved.", self.output_var, self._select_output)
 
-        self.generate_button = ttk.Button(actions, text="Generate Brochure", command=self.start_generation)
+        advanced = ctk.CTkFrame(body, fg_color="transparent")
+        advanced.grid(row=4, column=0, columnspan=3, sticky="ew", padx=18, pady=(4, 18))
+        advanced.columnconfigure(1, weight=1)
+        ctk.CTkLabel(advanced, text="Model", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ctk.CTkEntry(advanced, textvariable=self.model_var, height=34).grid(row=0, column=1, sticky="ew")
+
+        actions = ctk.CTkFrame(main, corner_radius=18)
+        actions.grid(row=2, column=0, sticky="nsew")
+        actions.columnconfigure(0, weight=1)
+        actions.rowconfigure(2, weight=1)
+
+        top_actions = ctk.CTkFrame(actions, fg_color="transparent")
+        top_actions.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        top_actions.columnconfigure(2, weight=1)
+
+        self.generate_button = ctk.CTkButton(top_actions, text="Generate Brochure", height=42, command=self.start_generation)
         self.generate_button.grid(row=0, column=0, sticky="w")
 
-        self.open_output_button = ttk.Button(actions, text="Open Output Folder", command=self.open_output_folder, state="disabled")
-        self.open_output_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.open_output_button = ctk.CTkButton(top_actions, text="Open Output Folder", height=42, command=self.open_output_folder, state="disabled")
+        self.open_output_button.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
-        ttk.Label(actions, textvariable=self.status_var).grid(row=0, column=2, sticky="e")
+        status = ctk.CTkLabel(top_actions, textvariable=self.status_var, anchor="e")
+        status.grid(row=0, column=2, sticky="e")
 
-        self.log_widget = ScrolledText(main, height=18, wrap="word", state="disabled")
-        self.log_widget.grid(row=8, column=0, columnspan=3, sticky="nsew")
-        main.rowconfigure(8, weight=1)
+        self.progress_bar = ctk.CTkProgressBar(actions, mode="indeterminate")
+        self.progress_bar.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        self.progress_bar.set(0)
 
-    def _path_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar, command) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 8), pady=4)
-        ttk.Button(parent, text="Browse", command=command).grid(row=row, column=2, sticky="ew", pady=4)
+        self.log_widget = ctk.CTkTextbox(actions, wrap="word", state="disabled")
+        self.log_widget.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 18))
+
+    def _path_row(self, parent: ctk.CTkFrame, row: int, label: str, help_text: str, variable: tk.StringVar, command) -> None:
+        label_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        label_frame.grid(row=row, column=0, sticky="w", padx=(18, 10), pady=10)
+
+        ctk.CTkLabel(label_frame, text=label, font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(label_frame, text=help_text, text_color=("gray40", "gray70")).grid(row=1, column=0, sticky="w")
+
+        ctk.CTkEntry(parent, textvariable=variable, height=38).grid(row=row, column=1, sticky="ew", padx=(0, 10), pady=10)
+        ctk.CTkButton(parent, text="Browse", width=110, height=38, command=command).grid(row=row, column=2, sticky="e", padx=(0, 18), pady=10)
 
     def _select_pdf(self) -> None:
         path = filedialog.askopenfilename(title="Select listing PDF", filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
@@ -177,6 +211,12 @@ class BrochureGui:
             self.generate_button.configure(state="disabled" if running else "normal")
         if self.open_output_button:
             self.open_output_button.configure(state="disabled")
+        if self.progress_bar:
+            if running:
+                self.progress_bar.start()
+            else:
+                self.progress_bar.stop()
+                self.progress_bar.set(0)
         self.status_var.set("Running..." if running else "Ready")
 
     def _append_log(self, message: str) -> None:
@@ -214,7 +254,7 @@ def open_folder(folder: Path) -> None:
 
 
 def launch_gui(default_template: Path, default_model: str = DEFAULT_MODEL) -> bool:
-    root = tk.Tk()
+    root = ctk.CTk()
     BrochureGui(root, default_template=default_template, default_model=default_model)
     root.mainloop()
     return True
