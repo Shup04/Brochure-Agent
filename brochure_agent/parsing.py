@@ -4,6 +4,7 @@ import base64
 import io
 import re
 from collections import Counter
+from datetime import date
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -344,7 +345,9 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
     built_match = re.search(r"(?:Year Built|Built)\s*(\d{4})", " | ".join(values_by_label.get("age", [])), flags=re.IGNORECASE) or re.search(r"Year Built\s+(\d{4})", raw_text, flags=re.IGNORECASE)
     if built_match:
         built_year = int(built_match.group(1))
-        age_clean.append(f"{2025 - built_year} Years")
+        age = date.today().year - built_year
+        if age >= 0:
+            age_clean.append(f"{age} Years")
 
     lot_size_clean: list[str] = []
     lot_acres_match = re.search(r"Lot Acres\s+([0-9.]+)", raw_text, flags=re.IGNORECASE)
