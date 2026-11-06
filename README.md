@@ -90,7 +90,7 @@ Generation sends extracted listing text and photo thumbnails to the configured m
 
 Structured responses ensure usable fields, not factual correctness. Compare the generated address, price, measurements, claims and selected photos against the inputs, and check text overflow and cropping in PowerPoint. Cleanup is tailored to particular listing-sheet patterns. Property age uses the current calendar year on the computer running the app minus the extracted year built; a future construction year is omitted rather than shown as a negative age.
 
-The CLI/GUI and pipeline are implemented. This documentation pass did not make model requests or verify a newly rendered presentation, current model availability or the intended Windows installation.
+The CLI/GUI and pipeline are implemented. Offline assembly and visual checks are described below; live model behavior and the intended Windows installation remain unverified.
 
 ## Tests
 
@@ -100,4 +100,71 @@ After installing the dependencies, run the regression tests from the repository 
 python -m unittest discover -s tests -v
 ```
 
-These tests cover property-age cleanup, including calendar-year rollover and future construction dates. They run locally without an API key or model requests.
+These tests cover property-age cleanup, including calendar-year rollover and future construction dates, plus offline integration and input failures. They run locally without an API key or model requests.
+
+## Offline acceptance demonstration
+
+After installing `requirements.txt`, this one command runs the **existing CLI and
+pipeline** with generated listing text/PDF, twelve synthetic image panels and
+mocked structured model responses. It needs no key and blocks socket connections:
+
+```bash
+python -m tests.offline_acceptance
+```
+
+It writes `outputs/offline-acceptance/acceptance.pptx`, the source fixtures and a
+`report.json`. Checks cover the two-slide deck, exact field mapping, one main and
+ten unique gallery photos, excluded photos, filename-associated captions (mock
+responses deliberately arrive in reverse order), slot positions, valid crop
+fractions and unresolved placeholders. This demonstrates assembly, not model
+accuracy or the quality of real property photos.
+
+The demo derives its layout from the supplied template, preserving its text
+styles and placeholder geometry. It replaces the raster backgrounds with plain
+fictional-demo backgrounds: the supplied backgrounds contain agency branding,
+a portrait, an old MLS number and a measurement-source claim. **These are baked
+into images, not editable text placeholders.** Before using the original template
+for another listing, replace those backgrounds in PowerPoint and verify all
+remaining boilerplate. The test suite also exercises the unmodified template.
+
+![Synthetic brochure front](docs/offline-front.png)
+![Synthetic brochure back](docs/offline-back.png)
+
+Optional PDF export for visual review, with LibreOffice installed:
+
+```bash
+libreoffice --headless --convert-to pdf --outdir outputs/offline-acceptance \
+  outputs/offline-acceptance/acceptance.pptx
+```
+
+On Linux where the desktop CLI cannot start, the included LibreOfficeKit helper
+uses the same installed office engine without desktop IPC:
+
+```bash
+python -m tests.render_acceptance \
+  outputs/offline-acceptance/acceptance.pptx \
+  outputs/offline-acceptance/acceptance.pdf
+# Optional: pass --install /path/to/libreoffice/program
+pdftoppm -scale-to 1600 -png outputs/offline-acceptance/acceptance.pdf \
+  outputs/offline-acceptance/slide
+```
+
+The committed previews were exported using LibreOfficeKit 26.2.5.2 and Poppler.
+Both pages were visually inspected with representative 73–82 character captions:
+text was readable without overlapping neighboring panels, center cropping kept
+the fixture labels visible, and no dynamic placeholders remained. The normal
+LibreOffice CLI exited with status 1 in the test sandbox; the Kit helper succeeded.
+Font substitution and PowerPoint layout can differ. Arbitrarily long input is not
+covered by this visual check and still requires manual review.
+
+Input preflight now rejects missing/empty photo folders, unreadable photos,
+unreadable/textless PDFs and missing, unknown or duplicate image template slots
+before creating a model client. The fixed template contract requires all listed
+text and image placeholders even for a sparse gallery. Unused gallery slots are
+covered in white so old background imagery cannot show through.
+
+Verified on Linux/Python 3.14.7 with python-pptx 1.0.2, Pillow 12.2.0, pypdf 6.10.2,
+pydantic 2.13.3 and openai 2.32.0: 21 unit/integration tests, the offline command,
+CLI help/error paths and Python compilation. Eight existing property-age tests
+remain unchanged. No live model requests were made. Windows launch helpers were
+reviewed, but a Windows Python installation and the Tk GUI were not executed.
