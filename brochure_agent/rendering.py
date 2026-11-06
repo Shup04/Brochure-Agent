@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import math
 import re
 from copy import deepcopy
@@ -16,6 +17,39 @@ from .utils import format_beds_and_baths, format_total, normalize_sqft_text
 SUMMARY_TOP_MARGIN_PT = 34
 ROOM_TOP_MARGIN_PT = 30
 ROOM_CONTENT_HEIGHT_PT = 420
+
+TEXT_PLACEHOLDERS = {
+    "{{ADDRESS}}", "{{PRICE}}", "{{BEDS_AND_BATHS}}", "{{TITLE}}",
+    "{{SUMMARY}}", "{{FEATURE_BLOCK}}", "{{ROOM_BLOCK}}", "{{TOTAL}}",
+    *(f"{{{{caption_{i}}}}}" for i in range(1, 11)),
+}
+IMAGE_PLACEHOLDERS = {"{{IMG_MAIN}}", *(f"{{{{IMG_{i}}}}}" for i in range(1, 11))}
+
+
+def validate_template(template_path) -> None:
+    """Check the fixed template contract before any paid interpretation stage."""
+    pptx = require_dependency("pptx", "python-pptx")
+    try:
+        presentation = pptx.Presentation(str(template_path))
+    except (OSError, ValueError, KeyError, pptx.exc.PackageNotFoundError) as exc:
+        raise RuntimeError(f"Cannot read PowerPoint template {template_path}: {exc}") from exc
+    text_tokens: set[str] = set()
+    image_names: list[str] = []
+    for slide in presentation.slides:
+        for shape in slide.shapes:
+            name = shape.name.strip()
+            if name.startswith("{{"):
+                image_names.append(name)
+            if shape.has_text_frame:
+                text_tokens.update(re.findall(r"\{\{[^{}]+\}\}", shape.text))
+    missing = (TEXT_PLACEHOLDERS - text_tokens) | (IMAGE_PLACEHOLDERS - set(image_names))
+    if missing:
+        raise RuntimeError(f"Template missing required placeholders: {', '.join(sorted(missing))}")
+    unknown = (text_tokens - TEXT_PLACEHOLDERS) | (set(image_names) - IMAGE_PLACEHOLDERS)
+    if unknown:
+        raise RuntimeError(f"Unknown template placeholders: {', '.join(sorted(unknown))}")
+    if len(image_names) != len(set(image_names)):
+        raise RuntimeError("Template has duplicate image placeholder names.")
 
 
 def _pt(value: float):
@@ -329,10 +363,17 @@ def remove_shape(shape) -> None:
 
 def fill_picture_placeholder(slide, placeholder_shape, image_path):
     left, top, width, height = placeholder_shape.left, placeholder_shape.top, placeholder_shape.width, placeholder_shape.height
+    picture_source = str(image_path)
     with Image.open(image_path) as img:
         image_width, image_height = img.size
+        if img.format == "WEBP":
+            # python-pptx cannot embed WebP. Keep filenames for selection/captions
+            # and convert only the embedded image (first frame for animations).
+            picture_source = io.BytesIO()
+            img.save(picture_source, format="PNG")
+            picture_source.seek(0)
 
-    picture = slide.shapes.add_picture(str(image_path), left, top, width=width, height=height)
+    picture = slide.shapes.add_picture(picture_source, left, top, width=width, height=height)
     image_ratio = image_width / image_height
     box_ratio = width / height
     if image_ratio > box_ratio:
@@ -360,6 +401,20 @@ def render_presentation(template_path, output_path, text_mapping, feature_rows, 
             shape_name = getattr(shape, "name", "").strip()
             if shape_name in image_map:
                 fill_picture_placeholder(slide, shape, image_map[shape_name])
+                continue
+            if shape_name in IMAGE_PLACEHOLDERS:
+                # Keep an opaque cover: the supplied template's background can
+                # contain old listing content behind an unused photo slot.
+                from pptx.dml.color import RGBColor
+                from pptx.enum.shapes import MSO_SHAPE
+                cover = slide.shapes.add_shape(
+                    MSO_SHAPE.RECTANGLE, shape.left, shape.top, shape.width, shape.height,
+                )
+                cover.fill.solid()
+                cover.fill.fore_color.rgb = RGBColor(255, 255, 255)
+                cover.line.fill.background()
+                cover.name = "Unused gallery slot"
+                remove_shape(shape)
                 continue
             if getattr(shape, "has_text_frame", False):
                 combined_text = "\n".join("".join(run.text for run in paragraph.runs) for paragraph in shape.text_frame.paragraphs)

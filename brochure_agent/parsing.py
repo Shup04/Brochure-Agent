@@ -4,6 +4,7 @@ import base64
 import io
 import re
 from collections import Counter
+from datetime import date
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -25,8 +26,11 @@ from .utils import clean_caption, is_size_line, normalize_scene_type, normalize_
 
 def extract_pdf_text(pdf_path: Path) -> str:
     pypdf = require_dependency("pypdf", "pypdf")
-    reader = pypdf.PdfReader(str(pdf_path))
-    pages = [(page.extract_text() or "") for page in reader.pages]
+    try:
+        reader = pypdf.PdfReader(str(pdf_path))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except (OSError, pypdf.errors.PdfReadError) as exc:
+        raise RuntimeError(f"Cannot read listing PDF {pdf_path}: {exc}") from exc
     text = "\n".join(pages).strip()
     if not text:
         raise RuntimeError(f"No text could be extracted from {pdf_path}.")
@@ -73,7 +77,7 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
 
 
 def iter_image_paths(image_dir: Path) -> list[Path]:
-    images = [p for p in sorted(image_dir.iterdir()) if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS]
+    images = [p for p in sorted(image_dir.iterdir()) if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS]
     if not images:
         raise RuntimeError(f"No supported images were found in {image_dir}.")
     return images
@@ -344,7 +348,9 @@ def clean_feature_rows(feature_rows: Sequence[FeatureRow], raw_text: str) -> lis
     built_match = re.search(r"(?:Year Built|Built)\s*(\d{4})", " | ".join(values_by_label.get("age", [])), flags=re.IGNORECASE) or re.search(r"Year Built\s+(\d{4})", raw_text, flags=re.IGNORECASE)
     if built_match:
         built_year = int(built_match.group(1))
-        age_clean.append(f"{2025 - built_year} Years")
+        age = date.today().year - built_year
+        if age >= 0:
+            age_clean.append(f"{age} Years")
 
     lot_size_clean: list[str] = []
     lot_acres_match = re.search(r"Lot Acres\s+([0-9.]+)", raw_text, flags=re.IGNORECASE)

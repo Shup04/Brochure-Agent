@@ -18,7 +18,7 @@ The CustomTkinter GUI runs generation in a background thread and displays queued
 
 ## Inputs and template contract
 
-Provide a PDF with extractable text, a photo folder, a template and an output path. Supported photo extensions are `.jpg`, `.jpeg`, `.png`, `.webp` and `.gif`; folder scanning is not recursive. Image-only scanned PDFs fail with a no-extracted-text error because OCR is not implemented.
+Provide a PDF with extractable text, a photo folder, a template and an output path. Supported photo extensions are `.jpg`, `.jpeg`, `.png`, `.webp` and `.gif`; folder scanning is not recursive. WebP photos are embedded as PNG because PowerPoint assembly does not support WebP directly; animated WebP uses its first frame. Original filenames still identify captions. Image-only scanned PDFs fail with a no-extracted-text error because OCR is not implemented.
 
 Start with [`Brochure_Template.pptx`](Brochure_Template.pptx). Its text placeholders are:
 
@@ -71,7 +71,7 @@ python main.py --cli \
   --output "/path/to/output-brochure.pptx"
 ```
 
-Without `--cli`, the app attempts the GUI first. If that is unavailable, it can use the supplied PDF/image arguments for CLI mode; launching with no inputs instead reports the GUI error. Relative paths are resolved from the working directory. Generation creates the output directory if necessary and saves to the chosen filename, replacing an existing file at that path.
+Without `--cli`, the app attempts the GUI first. If that is unavailable, it can use the supplied PDF/image arguments for CLI mode; launching with no inputs instead reports the GUI error. Relative paths are resolved from the working directory. Generation creates the output directory if necessary and saves to the chosen filename, replacing an existing output file at that path. An output path that is a directory or aliases the PDF, template or an image-folder input is rejected before any model request.
 
 ## Windows install and updates
 
@@ -88,6 +88,84 @@ Without `--cli`, the app attempts the GUI first. If that is unavailable, it can 
 
 Generation sends extracted listing text and photo thumbnails to the configured model service and can incur API charges. Files remain available locally, but the interpretation stages are not an offline workflow. Git ignores listing PDFs, common input/output folders, environment files and common generated-brochure names; an arbitrary output filename is not necessarily ignored.
 
-Structured responses ensure usable fields, not factual correctness. Compare the generated address, price, measurements, claims and selected photos against the inputs, and check text overflow and cropping in PowerPoint. Cleanup is tailored to particular listing-sheet patterns; for example, the current property-age calculation uses `2025 - year_built`, which needs review for later listings.
+Structured responses ensure usable fields, not factual correctness. Compare the generated address, price, measurements, claims and selected photos against the inputs, and check text overflow and cropping in PowerPoint. Cleanup is tailored to particular listing-sheet patterns. Property age uses the current calendar year on the computer running the app minus the extracted year built; a future construction year is omitted rather than shown as a negative age.
 
-The CLI/GUI and pipeline are implemented. This documentation pass did not make model requests or verify a newly rendered presentation, current model availability or the intended Windows installation.
+The CLI/GUI and pipeline are implemented. Offline assembly and visual checks are described below; live model behavior and the intended Windows installation remain unverified.
+
+## Tests
+
+After installing the dependencies, run the regression tests from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+These tests cover property-age cleanup, including calendar-year rollover and future construction dates, plus offline integration and input failures. They run locally without an API key or model requests.
+
+## Offline acceptance demonstration
+
+After installing `requirements.txt`, this one command runs the **existing CLI and
+pipeline** with generated listing text/PDF, twelve synthetic image panels and
+mocked structured model responses. It needs no key and blocks socket connections:
+
+```bash
+python -m tests.offline_acceptance
+```
+
+It writes `outputs/offline-acceptance/acceptance.pptx`, the source fixtures and a
+`report.json`. Checks cover the two-slide deck, exact field mapping, one main and
+ten unique gallery photos, excluded photos, filename-associated captions (mock
+responses deliberately arrive in reverse order), slot positions, valid crop
+fractions and unresolved placeholders. This demonstrates assembly, not model
+accuracy or the quality of real property photos.
+
+The demo derives its layout from the supplied template, preserving its text
+styles and placeholder geometry. It replaces the raster backgrounds with plain
+fictional-demo backgrounds: the supplied backgrounds contain agency branding,
+a portrait, an old MLS number and a measurement-source claim. **These are baked
+into images, not editable text placeholders.** Before using the original template
+for another listing, replace those backgrounds in PowerPoint and verify all
+remaining boilerplate. The test suite also exercises the unmodified template.
+
+![Synthetic brochure front](docs/offline-front.png)
+![Synthetic brochure back](docs/offline-back.png)
+
+Optional PDF export for visual review, with LibreOffice installed:
+
+```bash
+libreoffice --headless --convert-to pdf --outdir outputs/offline-acceptance \
+  outputs/offline-acceptance/acceptance.pptx
+```
+
+On Linux where the desktop CLI cannot start, the included LibreOfficeKit helper
+uses the same installed office engine without desktop IPC:
+
+```bash
+python -m tests.render_acceptance \
+  outputs/offline-acceptance/acceptance.pptx \
+  outputs/offline-acceptance/acceptance.pdf
+# Optional: pass --install /path/to/libreoffice/program
+pdftoppm -scale-to 1600 -png outputs/offline-acceptance/acceptance.pdf \
+  outputs/offline-acceptance/slide
+```
+
+The committed previews were exported using LibreOfficeKit 26.2.5.2 and Poppler.
+Both pages were visually inspected with representative 73–82 character captions:
+text was readable without overlapping neighboring panels, center cropping kept
+the fixture labels visible, and no dynamic placeholders remained. The normal
+LibreOffice CLI exited with status 1 in the test sandbox; the Kit helper succeeded.
+Font substitution and PowerPoint layout can differ. Arbitrarily long input is not
+covered by this visual check and still requires manual review.
+
+Input preflight verifies and decodes each photo before creating a model client, so truncated JPEG scan data is rejected before a paid request. It rejects missing/empty photo folders, unreadable photos,
+unreadable/textless PDFs and missing, unknown or duplicate image template slots
+before creating a model client. The fixed template contract requires all listed
+text and image placeholders even for a sparse gallery. Unused gallery slots are
+covered in white so old background imagery cannot show through.
+
+Verified on Linux/Python 3.14.7 with python-pptx 1.0.2, Pillow 12.2.0, pypdf 6.10.2,
+pydantic 2.13.3 and openai 2.32.0: 28 unit/integration tests (including a WebP
+photo through the full mocked pipeline), the offline command,
+CLI help/error paths and Python compilation. Eight existing property-age tests
+remain unchanged. No live model requests were made. Windows launch helpers were
+reviewed, but a Windows Python installation and the Tk GUI were not executed.

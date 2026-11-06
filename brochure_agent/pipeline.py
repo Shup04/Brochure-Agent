@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from PIL import Image
+
 from .copywriting import generate_brochure_copy
 from .dependencies import build_client
-from .models import AppConfig
+from .models import AppConfig, SUPPORTED_IMAGE_EXTENSIONS
 from .parsing import (
     analyze_images,
     analyze_listing_text,
@@ -15,23 +17,48 @@ from .parsing import (
     extract_pdf_text,
     iter_image_paths,
 )
-from .rendering import build_text_mapping, render_presentation
+from .rendering import build_text_mapping, render_presentation, validate_template
 from .utils import log_print
 
 
 def validate_config(config: AppConfig) -> None:
-    if not config.pdf_path.exists():
+    if not config.pdf_path.is_file():
         raise RuntimeError(f"PDF not found: {config.pdf_path}")
     if not config.image_dir.exists() or not config.image_dir.is_dir():
         raise RuntimeError(f"Image directory not found: {config.image_dir}")
-    if not config.template_path.exists():
+    if not config.template_path.is_file():
         raise RuntimeError(f"Template not found: {config.template_path}")
+    output = config.output_path.resolve()
+    inputs = [config.pdf_path, config.template_path]
+    inputs.extend(path for path in config.image_dir.iterdir()
+                  if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
+    for source in inputs:
+        if output == source.resolve() or (output.exists() and output.samefile(source)):
+            raise RuntimeError(f"Output must not overwrite an input file: {source}")
+    if config.output_path.is_dir():
+        raise RuntimeError(f"Output is a directory: {config.output_path}")
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -> Path:
+    validate_config(config)
     logger("Reading listing PDF...")
     raw_text = extract_pdf_text(config.pdf_path)
+
+    logger("Checking template and photos...")
+    validate_template(config.template_path)
+    image_paths = iter_image_paths(config.image_dir)
+    for image_path in image_paths:
+        try:
+            with Image.open(image_path) as image:
+                image.verify()
+            # verify() checks structure, but JPEG scan data can still be
+            # truncated. Decode before any model request can incur a charge.
+            with Image.open(image_path) as image:
+                image.load()
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Cannot read image {image_path}: {exc}") from exc
+    logger(f"Found {len(image_paths)} image(s).")
 
     client = build_client()
 
@@ -39,10 +66,6 @@ def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -
     listing = analyze_listing_text(client, config.model, raw_text)
     listing.feature_rows = clean_feature_rows(listing.feature_rows, raw_text)
     listing.room_sections = clean_room_sections(listing.room_sections, raw_text)
-
-    logger("Scanning image folder...")
-    image_paths = iter_image_paths(config.image_dir)
-    logger(f"Found {len(image_paths)} image(s).")
 
     ranked_images = analyze_images(client, config.model, image_paths, logger)
     main_image, gallery_images = choose_images(ranked_images)
