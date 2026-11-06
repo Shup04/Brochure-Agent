@@ -13,7 +13,7 @@ from pptx.dml.color import RGBColor
 from brochure_agent.app import main
 from brochure_agent.models import AppConfig
 from brochure_agent.parsing import extract_pdf_text, iter_image_paths
-from brochure_agent.pipeline import run_pipeline
+from brochure_agent.pipeline import run_pipeline, validate_config
 from brochure_agent.rendering import replace_text_in_shape
 from tests.offline_acceptance import ROOT, FakeClient, create_fixtures, run_acceptance, verify_deck, write_pdf
 
@@ -76,6 +76,47 @@ class AcceptanceTests(unittest.TestCase):
                 run_pipeline(self.config, logger=lambda _: None)
             client.assert_not_called()
 
+    def test_truncated_jpeg_fails_before_client_creation(self):
+        path = self.config.image_dir / 'truncated.jpg'
+        Image.new('RGB', (500, 500), 'red').save(path)
+        path.write_bytes(path.read_bytes()[:-100])
+        with Image.open(path) as image:
+            image.verify()  # This alone succeeds on truncated JPEG scan data.
+        with patch('brochure_agent.pipeline.build_client') as client:
+            with self.assertRaisesRegex(RuntimeError, 'Cannot read image.*truncated.jpg'):
+                run_pipeline(self.config, logger=lambda _: None)
+            client.assert_not_called()
+
+    def test_output_cannot_overwrite_inputs(self):
+        for source in (self.config.pdf_path, self.config.template_path,
+                       next(self.config.image_dir.iterdir())):
+            with self.subTest(source=source.name):
+                self.config.output_path = source
+                before = source.read_bytes()
+                with self.assertRaisesRegex(RuntimeError, 'Output must not overwrite an input'):
+                    validate_config(self.config)
+                self.assertEqual(source.read_bytes(), before)
+
+    def test_output_alias_cannot_overwrite_input(self):
+        alias = self.directory / 'alias.pptx'
+        alias.hardlink_to(self.config.pdf_path)
+        self.config.output_path = alias
+        with self.assertRaisesRegex(RuntimeError, 'Output must not overwrite an input'):
+            validate_config(self.config)
+
+    def test_existing_brochure_output_in_photo_directory_is_allowed(self):
+        self.config.output_path = self.config.image_dir / 'brochure.pptx'
+        validate_config(self.config)
+        self.config.output_path.write_bytes(b'previous generated output')
+        validate_config(self.config)
+
+    def test_output_directory_fails_before_client_creation(self):
+        self.config.output_path = self.directory
+        with patch('brochure_agent.pipeline.build_client') as client:
+            with self.assertRaisesRegex(RuntimeError, 'Output is a directory'):
+                run_pipeline(self.config, logger=lambda _: None)
+            client.assert_not_called()
+
     def test_unreadable_pdf_has_clear_error_and_no_client(self):
         self.config.pdf_path.write_bytes(b'not a pdf')
         with patch('brochure_agent.pipeline.build_client') as client:
@@ -120,6 +161,27 @@ class AcceptanceTests(unittest.TestCase):
         covers = [s for slide in p.slides for s in slide.shapes if s.name == 'Unused gallery slot']
         self.assertEqual(len(covers), 9)
         self.assertTrue(all(s.fill.fore_color.rgb == RGBColor(255, 255, 255) for s in covers))
+
+    def test_unused_picture_shape_is_covered_in_sparse_gallery(self):
+        template = Presentation(self.config.template_path)
+        slide, slot = next((slide, shape) for slide in template.slides for shape in slide.shapes
+                           if shape.name.strip() == '{{IMG_10}}')
+        geometry = (slot.left, slot.top, slot.width, slot.height)
+        picture = slide.shapes.add_picture(str(self.config.image_dir / '00_front_exterior.png'), *geometry)
+        picture.name = slot.name
+        slot._element.getparent().remove(slot._element)
+        self.config.template_path = self.directory / 'picture-template.pptx'
+        template.save(self.config.template_path)
+        for image in self.config.image_dir.iterdir():
+            if not image.name.startswith(('00', '01')):
+                image.unlink()
+        with patch('brochure_agent.pipeline.build_client', return_value=FakeClient()):
+            run_pipeline(self.config, logger=lambda _: None)
+        output = Presentation(self.config.output_path)
+        cover = next(s for slide in output.slides for s in slide.shapes
+                     if s.name == 'Unused gallery slot' and
+                     (s.left, s.top, s.width, s.height) == geometry)
+        self.assertEqual(cover.fill.fore_color.rgb, RGBColor(255, 255, 255))
 
     def test_fragmented_placeholder_replaced_with_style(self):
         p = Presentation()
