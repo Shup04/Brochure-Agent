@@ -26,8 +26,11 @@ from .utils import clean_caption, is_size_line, normalize_scene_type, normalize_
 
 def extract_pdf_text(pdf_path: Path) -> str:
     pypdf = require_dependency("pypdf", "pypdf")
-    reader = pypdf.PdfReader(str(pdf_path))
-    pages = [(page.extract_text() or "") for page in reader.pages]
+    try:
+        reader = pypdf.PdfReader(str(pdf_path))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except (OSError, pypdf.errors.PdfReadError) as exc:
+        raise RuntimeError(f"Cannot read listing PDF {pdf_path}: {exc}") from exc
     text = "\n".join(pages).strip()
     if not text:
         raise RuntimeError(f"No text could be extracted from {pdf_path}.")
@@ -74,7 +77,7 @@ def analyze_listing_text(client: OpenAI, model: str, raw_text: str) -> ListingEx
 
 
 def iter_image_paths(image_dir: Path) -> list[Path]:
-    images = [p for p in sorted(image_dir.iterdir()) if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS]
+    images = [p for p in sorted(image_dir.iterdir()) if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS]
     if not images:
         raise RuntimeError(f"No supported images were found in {image_dir}.")
     return images
