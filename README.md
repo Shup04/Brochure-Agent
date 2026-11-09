@@ -88,6 +88,16 @@ Without `--cli`, the app attempts the GUI first. If that is unavailable, it can 
 
 Generation sends extracted listing text and photo thumbnails to the configured model service and can incur API charges. Files remain available locally, but the interpretation stages are not an offline workflow. Git ignores listing PDFs, common input/output folders, environment files and common generated-brochure names; an arbitrary output filename is not necessarily ignored.
 
-Structured responses ensure usable fields, not factual correctness. Compare the generated address, price, measurements, claims and selected photos against the inputs, and check text overflow and cropping in PowerPoint. Cleanup is tailored to particular listing-sheet patterns; for example, the current property-age calculation uses `2025 - year_built`, which needs review for later listings.
+Structured responses ensure usable fields, not factual correctness. Compare the generated address, price, measurements, claims and selected photos against the inputs, and check text overflow and cropping in PowerPoint. Cleanup is tailored to particular listing-sheet patterns. Property age uses the current calendar year on the computer running the app minus the extracted year built; a future construction year is omitted rather than shown as a negative age.
 
 The CLI/GUI and pipeline are implemented. This documentation pass did not make model requests or verify a newly rendered presentation, current model availability or the intended Windows installation.
+
+## Tests
+
+After installing the dependencies, run the regression tests from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+These tests cover property-age cleanup, including calendar-year rollover and future construction dates. They run locally without an API key or model requests.
