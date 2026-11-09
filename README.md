@@ -71,7 +71,7 @@ python main.py --cli \
   --output "/path/to/output-brochure.pptx"
 ```
 
-Without `--cli`, the app attempts the GUI first. If that is unavailable, it can use the supplied PDF/image arguments for CLI mode; launching with no inputs instead reports the GUI error. Relative paths are resolved from the working directory. Generation creates the output directory if necessary and saves to the chosen filename, replacing an existing file at that path.
+Without `--cli`, the app attempts the GUI first. If that is unavailable, it can use the supplied PDF/image arguments for CLI mode; launching with no inputs instead reports the GUI error. Relative paths are resolved from the working directory. Generation creates the output directory if necessary and saves to the chosen filename, replacing an existing output file at that path. An output path that is a directory or aliases the PDF, template or an image-folder input is rejected before any model request.
 
 ## Windows install and updates
 
@@ -157,14 +157,14 @@ LibreOffice CLI exited with status 1 in the test sandbox; the Kit helper succeed
 Font substitution and PowerPoint layout can differ. Arbitrarily long input is not
 covered by this visual check and still requires manual review.
 
-Input preflight now rejects missing/empty photo folders, unreadable photos,
+Input preflight verifies and decodes each photo before creating a model client, so truncated JPEG scan data is rejected before a paid request. It rejects missing/empty photo folders, unreadable photos,
 unreadable/textless PDFs and missing, unknown or duplicate image template slots
 before creating a model client. The fixed template contract requires all listed
 text and image placeholders even for a sparse gallery. Unused gallery slots are
 covered in white so old background imagery cannot show through.
 
 Verified on Linux/Python 3.14.7 with python-pptx 1.0.2, Pillow 12.2.0, pypdf 6.10.2,
-pydantic 2.13.3 and openai 2.32.0: 22 unit/integration tests (including a WebP
+pydantic 2.13.3 and openai 2.32.0: 28 unit/integration tests (including a WebP
 photo through the full mocked pipeline), the offline command,
 CLI help/error paths and Python compilation. Eight existing property-age tests
 remain unchanged. No live model requests were made. Windows launch helpers were

@@ -7,7 +7,7 @@ from PIL import Image
 
 from .copywriting import generate_brochure_copy
 from .dependencies import build_client
-from .models import AppConfig
+from .models import AppConfig, SUPPORTED_IMAGE_EXTENSIONS
 from .parsing import (
     analyze_images,
     analyze_listing_text,
@@ -28,6 +28,15 @@ def validate_config(config: AppConfig) -> None:
         raise RuntimeError(f"Image directory not found: {config.image_dir}")
     if not config.template_path.is_file():
         raise RuntimeError(f"Template not found: {config.template_path}")
+    output = config.output_path.resolve()
+    inputs = [config.pdf_path, config.template_path]
+    inputs.extend(path for path in config.image_dir.iterdir()
+                  if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
+    for source in inputs:
+        if output == source.resolve() or (output.exists() and output.samefile(source)):
+            raise RuntimeError(f"Output must not overwrite an input file: {source}")
+    if config.output_path.is_dir():
+        raise RuntimeError(f"Output is a directory: {config.output_path}")
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -43,6 +52,10 @@ def run_pipeline(config: AppConfig, logger: Callable[[str], None] = log_print) -
         try:
             with Image.open(image_path) as image:
                 image.verify()
+            # verify() checks structure, but JPEG scan data can still be
+            # truncated. Decode before any model request can incur a charge.
+            with Image.open(image_path) as image:
+                image.load()
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Cannot read image {image_path}: {exc}") from exc
     logger(f"Found {len(image_paths)} image(s).")

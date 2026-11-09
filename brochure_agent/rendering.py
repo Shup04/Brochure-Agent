@@ -406,9 +406,15 @@ def render_presentation(template_path, output_path, text_mapping, feature_rows, 
                 # Keep an opaque cover: the supplied template's background can
                 # contain old listing content behind an unused photo slot.
                 from pptx.dml.color import RGBColor
-                shape.fill.solid()
-                shape.fill.fore_color.rgb = RGBColor(255, 255, 255)
-                shape.name = "Unused gallery slot"
+                from pptx.enum.shapes import MSO_SHAPE
+                cover = slide.shapes.add_shape(
+                    MSO_SHAPE.RECTANGLE, shape.left, shape.top, shape.width, shape.height,
+                )
+                cover.fill.solid()
+                cover.fill.fore_color.rgb = RGBColor(255, 255, 255)
+                cover.line.fill.background()
+                cover.name = "Unused gallery slot"
+                remove_shape(shape)
                 continue
             if getattr(shape, "has_text_frame", False):
                 combined_text = "\n".join("".join(run.text for run in paragraph.runs) for paragraph in shape.text_frame.paragraphs)
