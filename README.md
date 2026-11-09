@@ -18,7 +18,7 @@ The CustomTkinter GUI runs generation in a background thread and displays queued
 
 ## Inputs and template contract
 
-Provide a PDF with extractable text, a photo folder, a template and an output path. Supported photo extensions are `.jpg`, `.jpeg`, `.png`, `.webp` and `.gif`; folder scanning is not recursive. Image-only scanned PDFs fail with a no-extracted-text error because OCR is not implemented.
+Provide a PDF with extractable text, a photo folder, a template and an output path. Supported photo extensions are `.jpg`, `.jpeg`, `.png`, `.webp` and `.gif`; folder scanning is not recursive. WebP photos are embedded as PNG because PowerPoint assembly does not support WebP directly; animated WebP uses its first frame. Original filenames still identify captions. Image-only scanned PDFs fail with a no-extracted-text error because OCR is not implemented.
 
 Start with [`Brochure_Template.pptx`](Brochure_Template.pptx). Its text placeholders are:
 
@@ -164,7 +164,8 @@ text and image placeholders even for a sparse gallery. Unused gallery slots are
 covered in white so old background imagery cannot show through.
 
 Verified on Linux/Python 3.14.7 with python-pptx 1.0.2, Pillow 12.2.0, pypdf 6.10.2,
-pydantic 2.13.3 and openai 2.32.0: 21 unit/integration tests, the offline command,
+pydantic 2.13.3 and openai 2.32.0: 22 unit/integration tests (including a WebP
+photo through the full mocked pipeline), the offline command,
 CLI help/error paths and Python compilation. Eight existing property-age tests
 remain unchanged. No live model requests were made. Windows launch helpers were
 reviewed, but a Windows Python installation and the Tk GUI were not executed.

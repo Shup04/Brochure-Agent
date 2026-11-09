@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
 from pptx.dml.color import RGBColor
@@ -35,6 +36,30 @@ class AcceptanceTests(unittest.TestCase):
         with patch('brochure_agent.pipeline.build_client', return_value=client):
             run_pipeline(self.config, logger=lambda _: None)
         self.assertEqual(verify_deck(self.config.output_path, self.config.image_dir, client)['slides'], 2)
+
+    def test_webp_photo_renders_through_pipeline_as_png(self):
+        source = self.config.image_dir / '00_front_exterior.png'
+        webp = source.with_suffix('.webp')
+        with Image.open(source) as image:
+            image.save(webp, format='WEBP', lossless=True)
+        source.unlink()
+        client = FakeClient()
+        with patch('brochure_agent.pipeline.build_client', return_value=client):
+            run_pipeline(self.config, logger=lambda _: None)
+        template = Presentation(self.config.template_path)
+        n, slot = next((n, shape) for n, slide in enumerate(template.slides)
+                       for shape in slide.shapes if shape.name.strip() == '{{IMG_MAIN}}')
+        output = Presentation(self.config.output_path)
+        picture = next(shape for shape in output.slides[n].shapes
+                       if shape.shape_type == 13 and
+                       (shape.left, shape.top, shape.width, shape.height) ==
+                       (slot.left, slot.top, slot.width, slot.height))
+        self.assertEqual(picture.image.content_type, 'image/png')
+        with Image.open(webp) as expected, Image.open(io.BytesIO(picture.image.blob)) as actual:
+            self.assertEqual(actual.size, expected.size)
+            self.assertEqual(actual.convert('RGB').tobytes(), expected.convert('RGB').tobytes())
+        self.assertEqual(client.calls, ['ListingExtraction', 'ImageBatchAnalysis',
+                                        'ImageBatchAnalysis', 'BrochureCopyResponse'])
 
     def test_missing_photos_fail_before_client_creation(self):
         for image in self.config.image_dir.iterdir():

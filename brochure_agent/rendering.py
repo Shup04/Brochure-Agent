@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import math
 import re
 from copy import deepcopy
@@ -362,10 +363,17 @@ def remove_shape(shape) -> None:
 
 def fill_picture_placeholder(slide, placeholder_shape, image_path):
     left, top, width, height = placeholder_shape.left, placeholder_shape.top, placeholder_shape.width, placeholder_shape.height
+    picture_source = str(image_path)
     with Image.open(image_path) as img:
         image_width, image_height = img.size
+        if img.format == "WEBP":
+            # python-pptx cannot embed WebP. Keep filenames for selection/captions
+            # and convert only the embedded image (first frame for animations).
+            picture_source = io.BytesIO()
+            img.save(picture_source, format="PNG")
+            picture_source.seek(0)
 
-    picture = slide.shapes.add_picture(str(image_path), left, top, width=width, height=height)
+    picture = slide.shapes.add_picture(picture_source, left, top, width=width, height=height)
     image_ratio = image_width / image_height
     box_ratio = width / height
     if image_ratio > box_ratio:
